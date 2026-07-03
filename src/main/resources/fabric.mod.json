@@ -1,0 +1,25 @@
+{
+	"schemaVersion": 1,
+	"id": "autobuilder",
+	"version": "${version}",
+	"name": "AutoBuilder",
+	"description": "Loads .litematic/.schem schematics and automatically walks, aims, places blocks and manages the hotbar to build them, Litematica-style.",
+	"authors": [
+		"you"
+	],
+	"contact": {},
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.autobuilder.AutoBuilderClient"
+		]
+	},
+	"mixins": [],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
