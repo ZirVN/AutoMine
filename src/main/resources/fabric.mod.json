@@ -1,9 +1,9 @@
 {
 	"schemaVersion": 1,
-	"id": "autobuilder",
+	"id": "automine",
 	"version": "${version}",
-	"name": "AutoBuilder",
-	"description": "Loads .litematic/.schem schematics and automatically walks, aims, places blocks and manages the hotbar to build them, Litematica-style.",
+	"name": "AutoMine",
+	"description": "Mark two corners with /sel 1 and /sel 2, then /start: AutoMine clears the whole box top-down in 3-block-tall layers, digging a 3x3 face at a time and steering itself along the best axis.",
 	"authors": [
 		"you"
 	],
@@ -12,14 +12,25 @@
 	"environment": "client",
 	"entrypoints": {
 		"client": [
-			"com.autobuilder.AutoBuilderClient"
+			"com.automine.AutoMineClient"
+		],
+		"modmenu": [
+			"com.automine.integration.ModMenuIntegration"
 		]
 	},
-	"mixins": [],
+	"mixins": [
+		{
+			"config": "automine.client.mixins.json",
+			"environment": "client"
+		}
+	],
 	"depends": {
-		"fabricloader": ">=0.19.3",
+		"fabricloader": ">=0.19.2",
 		"minecraft": "~1.21.11",
 		"java": ">=21",
 		"fabric-api": "*"
+	},
+	"suggests": {
+		"modmenu": "*"
 	}
 }

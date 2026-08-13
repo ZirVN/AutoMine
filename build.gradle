@@ -22,7 +22,7 @@ loom {
 	splitEnvironmentSourceSets()
 
 	mods {
-		"autobuilder" {
+		"automine" {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
@@ -41,6 +41,11 @@ dependencies {
 
 	// Fabric API
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Mod Menu: only needed to compile the "Settings" button integration. It is
+	// optional at runtime (declared under "suggests"), so AutoMine still loads
+	// without it.
+	modCompileOnly files("libs/modmenu-17.0.0.jar")
 
 	testImplementation platform('org.junit:junit-bom:5.10.2')
 	testImplementation 'org.junit.jupiter:junit-jupiter'
