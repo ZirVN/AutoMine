@@ -1,16 +1,12 @@
 package com.automine.mixin;
 
-import com.automine.AutoMineClient;
-import com.automine.util.AutoEat;
+import com.automine.Bridge;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Redirect;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Lets AutoMine actually break blocks &mdash; and actually finish eating.
@@ -27,7 +23,7 @@ public class MinecraftClientMixin {
 
 	@ModifyVariable(method = "handleBlockBreaking", at = @At("HEAD"), argsOnly = true)
 	private boolean automine$forceBreaking(boolean breaking) {
-		return breaking || AutoMineClient.shouldForceBreaking();
+		return breaking || Bridge.shouldForceBreaking();
 	}
 
 	/**
@@ -38,7 +34,7 @@ public class MinecraftClientMixin {
 	 * one tick after it began, every time, and the mod re-clicked forever.
 	 *
 	 * <p>Only the use key is affected, and only while AutoEat is genuinely
-	 * mid-chew ({@link AutoEat#isHoldingUseKey}); every other key binding in the
+	 * mid-chew (via {@code Bridge.isHoldingUseKey}); every other key binding in the
 	 * method reads exactly as pressed. The {@code doItemUse} re-trigger further
 	 * down the method is already guarded by {@code !isUsingItem}, so forcing the
 	 * key while chewing cannot start a second bite.
@@ -47,36 +43,10 @@ public class MinecraftClientMixin {
 			at = @At(value = "INVOKE", target = "Lnet/minecraft/client/option/KeyBinding;isPressed()Z"))
 	private boolean automine$holdUseKeyWhileEating(KeyBinding binding) {
 		MinecraftClient self = (MinecraftClient) (Object) this;
-		if (binding == self.options.useKey && AutoEat.isHoldingUseKey(self)) {
+		if (binding == self.options.useKey && Bridge.isHoldingUseKey(self)) {
 			return true;
 		}
 		return binding.isPressed();
 	}
 
-	/**
-	 * Golden shovel, left click = corner 1. Handled here at the source instead of
-	 * through Fabric's {@code AttackBlockCallback}: that event both fired
-	 * unreliably on this client and, when answered with SUCCESS, still sent the
-	 * attack packet to the server. Cancelling {@code doAttack} outright means the
-	 * shovel never punches the block and the server never hears about the click.
-	 */
-	@Inject(method = "doAttack", at = @At("HEAD"), cancellable = true)
-	private void automine$shovelMarksCorner1(CallbackInfoReturnable<Boolean> cir) {
-		if (AutoMineClient.markCornerWithShovel(1)) {
-			cir.setReturnValue(false);
-		}
-	}
-
-	/**
-	 * Golden shovel, right click = corner 2. Same reasoning as corner 1 — and
-	 * doubly important here, because many servers bind their own tools (land
-	 * claims, GriefPrevention) to a golden shovel right click; swallowing the
-	 * click before any packet leaves keeps the two features from fighting.
-	 */
-	@Inject(method = "doItemUse", at = @At("HEAD"), cancellable = true)
-	private void automine$shovelMarksCorner2(CallbackInfo ci) {
-		if (AutoMineClient.markCornerWithShovel(2)) {
-			ci.cancel();
-		}
-	}
 }

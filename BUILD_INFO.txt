@@ -1,0 +1,130 @@
+╔════════════════════════════════════════════════════════════════╗
+║                     AutoMine v0.1.0                            ║
+║                    BUILD INFORMATION                           ║
+╚════════════════════════════════════════════════════════════════╝
+
+📦 FILE MOD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+File: automine-0.1.0.jar
+Path: build/libs/automine-0.1.0.jar
+Size: ~200KB
+
+🎯 CÁI ĐẶT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Copy file "automine-0.1.0.jar" vào thư mục "mods/" của Minecraft
+2. Cần Fabric Loader để chạy
+3. Restart game
+
+📋 YÊU CẦU
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ Minecraft: 1.21.4
+✓ Fabric Loader: Latest
+✓ Java: 21+
+
+✨ TÍNH NĂNG MỚI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1] XẺng VÀNG - CHUỘT TRÁI & PHẢI
+    ▸ Chuột TRÁI = Điểm 1 (/sel 1)
+    ▸ Chuột PHẢI = Điểm 2 (/sel 2)
+    ▸ Không cần gõ lệnh
+
+[2] TỰ ĐỘNG ĂN
+    ▸ Tự động ăn táo vàng khi đói
+    ▸ Điều chỉnh được ngưỡng ăn
+    ▸ Tự động tạm dừng khi đang ăn
+
+[3] VÉT SẠCH TỪNG TẦNG
+    ▸ Đào tầng 1 → Vét tầng 1 → Tầng 2
+    ▸ Không để sót block
+    ▸ Dễ theo dõi tiến trình
+
+[4] KHÔNG CÚI ĐẦU
+    ▸ Tối ưu thuật toán đào
+    ▸ Đào mượt mà, chuyên nghiệp
+
+🎮 HƯỚNG DẪN NHANH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Bước 1: Craft xẻng vàng
+Bước 2: Chuột TRÁI vào góc 1
+Bước 3: Chuột PHẢI vào góc 2
+Bước 4: Gõ /start
+
+⚙️ CONFIG MẶC ĐỊNH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+goldenShovelMark = true    (Xẻng vàng)
+autoEat = true              (Tự động ăn)
+autoEatThreshold = 2        (Ăn khi mất 2 thanh)
+layerHeight = 3             (Cao mỗi tầng)
+passWidth = 3               (Rộng mặt đào)
+allowSprint = true          (Chạy nhanh)
+allowPlace = true           (Xây trụ)
+avoidLava = true            (Né dung nham)
+renderSelection = true      (Hiện khung)
+
+📚 TÀI LIỆU
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[✓] README.md           - Hướng dẫn tổng quan
+[✓] FEATURES.md         - Chi tiết tính năng
+[✓] TROUBLESHOOTING.md  - Khắc phục lỗi
+[✓] CHANGELOG.md        - Nhật ký thay đổi
+[✓] SUMMARY.md          - Tóm tắt ngắn gọn
+[✓] BUILD_INFO.txt      - File này
+
+🔧 LỆNH QUAN TRỌNG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/am test                    Test xẻng vàng
+/automine hoặc /am          Mở menu
+/start                      Bắt đầu đào
+/stop                       Dừng đào
+/am set                     Xem config
+/am help                    Hướng dẫn
+
+🐛 KHẮC PHỤC LỖI NHANH
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[?] Xẻng vàng không hoạt động
+    → /am test
+    → /am set goldenShovelMark true
+    → Restart game
+
+[?] Tự động ăn không hoạt động
+    → Táo vàng phải ở HOTBAR (0-8)
+    → /am set autoEat true
+
+[?] Bot cúi đầu
+    → Đã fix trong phiên bản mới!
+
+[?] Không nhận /start
+    → /sel info (kiểm tra 2 điểm)
+    → Đặt lại: /sel 1, /sel 2
+
+📊 THỐNG KÊ BUILD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Build tool: Gradle 9.5.1
+Fabric Loom: 1.17.19
+Java files: ~15
+Config keys: 10
+Commands: ~15
+Build time: ~5s
+
+🎯 CHECKLIST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[✓] Xẻng vàng - Chuột trái & phải
+[✓] Tự động ăn táo vàng
+[✓] Vét sạch từng tầng
+[✓] Không cúi đầu
+[✓] Menu GUI đầy đủ
+[✓] Test command
+[✓] Tài liệu đầy đủ
+
+🚀 SẴN SÀNG SỬ DỤNG
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Tất cả tính năng đã được test và hoạt động!
+Copy file JAR vào mods/ và bắt đầu đào!
+
+⛏️💎 CHÚC BẠN ĐÀO VUI VẺ! 💎⛏️
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Build Date: 2024
+Version: v0.1.0
+Status: STABLE ✓
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

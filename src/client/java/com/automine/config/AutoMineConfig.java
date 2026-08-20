@@ -19,19 +19,6 @@ public final class AutoMineConfig {
 	public boolean allowPlace = true;
 	/** Sweep every leftover block out of a layer before descending to the next. */
 	public boolean sweepLayer = true;
-	/**
-	 * Seal fluids with blocks from the hotbar: water gets the whole nearby patch
-	 * filled (with a pillar-up breather when air runs low), lava only the cells
-	 * blocking the dig.
-	 */
-	public boolean fillFluids = true;
-	/**
-	 * Share the box with other accounts: start from the corner away from whoever
-	 * is already digging, and leave faces they are standing at for later.
-	 */
-	public boolean avoidPlayers = true;
-	/** Refuse to mine next to lava, and never dig down into it. */
-	public boolean avoidLava = true;
 	/** Reach used to decide whether a block can be mined from here (vanilla is ~4.5). */
 	public double reachDistance = 4.5;
 	/** Draw the selection box, the current layer and the block being mined. */
@@ -40,8 +27,39 @@ public final class AutoMineConfig {
 	public boolean autoEat = true;
 	/** Số thanh đói mất trước khi tự động ăn (1 thanh = 2 hunger points). */
 	public int autoEatThreshold = 2;
-	/** Cho phép dùng xẻng vàng để đánh dấu điểm 1 và 2. */
-	public boolean goldenShovelMark = true;
+	/** Tự quăng bình exp (Mending) hồi cúp khi độ bền tụt thấp. */
+	public boolean expRepair = true;
+	/** Độ bền còn lại kích hoạt việc quăng exp. */
+	public int expRepairThreshold = 50;
+	/** Thẻ "đang phát" Spotify trên HUD. */
+	public boolean spotifyHud = true;
+	public int spotifyX = 5;
+	public int spotifyY = 45;
+	/** Playlist Spotify công khai cho list nhạc (mặc định: Top 50 Việt Nam). */
+	public String musicPlaylist = "37i9dQZEVXbLdGSmz6xilI";
+	// --- Staff List + Auto Sign (2026-08-18; No-Render đã XOÁ HẲN khỏi AutoMine —
+	// tính năng chỉ còn ở AutoSellVDM + SpawnerProtect theo lời chốt) ---
+	public boolean staffHud = true;
+	public int staffHudX = -1;
+	public int staffHudY = -1;
+	public boolean autoSign = false;
+	/** Bán kính (block) coi là "staff tới gần" cho Auto Sign. Mặc định 10. */
+	public int staffRadius = 10;
+	/** 4 dòng cách nhau dấu | , mỗi dòng <=15 ký tự. */
+	public String signText = "Minh AFK dao da|Khong dung hack|Cam on staff <3";
+	/** Tên staff cách nhau dấu phẩy. */
+	public String staffNames = "DrDonutt,Dough4,Fallerfly,Evxn,Ryuui,Shyalyy,OGsummer,ItsDefRealMe,LzouZMp5,Munkerlich,Chaon,Showered,PastaGamer,Bautiegar,bloodspulse,GsMusie,Frwost,FluffyMaster07,W1zoX_,Itszdeath,archivePedro,evify,NoahvdAa,Zababi,Nathan,Owen1212055";
+
+	// --- Báo Discord khi dính nước/dung nham (khuôn config theo AutoSellVDM) ---
+	/** Bật gửi cảnh báo webhook khi máy đang đào mà dính nước/dung nham. */
+	public boolean alertFluid = true;
+	/** URL webhook Discord (https://discord.com/api/webhooks/...). */
+	public String alertWebhook = "";
+	/** Id Discord của người chơi để ping (chỉ số; dán nguyên <@id> cũng nhận). */
+	public String alertDiscordId = "";
+
+	/** Vị trí các panel ClickGUI, dạng "x,y|x,y|..." — rỗng = xếp cột mặc định. */
+	public String guiPanels = "";
 	private transient Path file;
 
 	public static AutoMineConfig loadOrCreate(Path configDir) {
@@ -80,9 +98,10 @@ public final class AutoMineConfig {
 	}
 
 	public List<String> keys() {
-		return List.of("layerHeight", "passWidth", "allowSprint", "allowPlace", "sweepLayer", "fillFluids",
-				"avoidPlayers", "avoidLava", "reachDistance", "renderSelection", "autoEat", "autoEatThreshold",
-				"goldenShovelMark");
+		return List.of("layerHeight", "passWidth", "allowSprint", "allowPlace", "sweepLayer", "reachDistance", "renderSelection", "autoEat", "autoEatThreshold",
+				"expRepair", "expRepairThreshold",
+				"alertFluid", "alertWebhook", "alertDiscordId",
+				"spotifyHud", "spotifyX", "spotifyY", "musicPlaylist", "guiPanels", "staffHud", "staffHudX", "staffHudY", "autoSign", "staffRadius", "signText", "staffNames");
 	}
 
 	public String get(String key) {
@@ -92,14 +111,27 @@ public final class AutoMineConfig {
 			case "allowSprint" -> String.valueOf(allowSprint);
 			case "allowPlace" -> String.valueOf(allowPlace);
 			case "sweepLayer" -> String.valueOf(sweepLayer);
-			case "fillFluids" -> String.valueOf(fillFluids);
-			case "avoidPlayers" -> String.valueOf(avoidPlayers);
-			case "avoidLava" -> String.valueOf(avoidLava);
 			case "reachDistance" -> String.valueOf(reachDistance);
 			case "renderSelection" -> String.valueOf(renderSelection);
 			case "autoEat" -> String.valueOf(autoEat);
 			case "autoEatThreshold" -> String.valueOf(autoEatThreshold);
-			case "goldenShovelMark" -> String.valueOf(goldenShovelMark);
+			case "expRepair" -> String.valueOf(expRepair);
+			case "expRepairThreshold" -> String.valueOf(expRepairThreshold);
+			case "alertFluid" -> String.valueOf(alertFluid);
+			case "alertWebhook" -> alertWebhook;
+			case "alertDiscordId" -> alertDiscordId;
+			case "spotifyHud" -> String.valueOf(spotifyHud);
+			case "spotifyX" -> String.valueOf(spotifyX);
+			case "spotifyY" -> String.valueOf(spotifyY);
+			case "musicPlaylist" -> musicPlaylist;
+			case "guiPanels" -> guiPanels;
+			case "staffHud" -> String.valueOf(staffHud);
+			case "staffHudX" -> String.valueOf(staffHudX);
+			case "staffHudY" -> String.valueOf(staffHudY);
+			case "autoSign" -> String.valueOf(autoSign);
+			case "staffRadius" -> String.valueOf(staffRadius);
+			case "signText" -> signText;
+			case "staffNames" -> staffNames;
 			default -> null;
 		};
 	}
@@ -118,14 +150,27 @@ public final class AutoMineConfig {
 				case "allowSprint" -> allowSprint = parseBool(value);
 				case "allowPlace" -> allowPlace = parseBool(value);
 				case "sweepLayer" -> sweepLayer = parseBool(value);
-				case "fillFluids" -> fillFluids = parseBool(value);
-				case "avoidPlayers" -> avoidPlayers = parseBool(value);
-				case "avoidLava" -> avoidLava = parseBool(value);
 				case "reachDistance" -> reachDistance = Double.parseDouble(value);
 				case "renderSelection" -> renderSelection = parseBool(value);
 				case "autoEat" -> autoEat = parseBool(value);
 				case "autoEatThreshold" -> autoEatThreshold = clamp(Integer.parseInt(value), 1, 10);
-				case "goldenShovelMark" -> goldenShovelMark = parseBool(value);
+				case "expRepair" -> expRepair = parseBool(value);
+				case "expRepairThreshold" -> expRepairThreshold = clamp(Integer.parseInt(value), 1, 1000);
+				case "alertFluid" -> alertFluid = parseBool(value);
+				case "alertWebhook" -> alertWebhook = value;
+				case "alertDiscordId" -> alertDiscordId = value;
+				case "spotifyHud" -> spotifyHud = parseBool(value);
+				case "spotifyX" -> spotifyX = clamp(Integer.parseInt(value), 0, 4000);
+				case "spotifyY" -> spotifyY = clamp(Integer.parseInt(value), 0, 4000);
+				case "musicPlaylist" -> musicPlaylist = value.isEmpty() ? musicPlaylist : value;
+				case "guiPanels" -> guiPanels = value;
+				case "staffHud" -> staffHud = parseBool(value);
+				case "staffHudX" -> staffHudX = Integer.parseInt(value);
+				case "staffHudY" -> staffHudY = Integer.parseInt(value);
+				case "autoSign" -> autoSign = parseBool(value);
+				case "staffRadius" -> staffRadius = clamp(Integer.parseInt(value), 1, 128);
+				case "signText" -> signText = value.isEmpty() ? signText : value;
+				case "staffNames" -> staffNames = value.isEmpty() ? staffNames : value;
 				default -> {
 					return false;
 				}
@@ -134,6 +179,44 @@ public final class AutoMineConfig {
 		} catch (NumberFormatException e) {
 			return false;
 		}
+	}
+
+	// --- Danh sách staff (sửa trong GUI; staffNames lưu dạng CSV) ---
+
+	/** staffNames CSV → List, bỏ ô trống. */
+	public List<String> staffList() {
+		List<String> out = new java.util.ArrayList<>();
+		for (String s : staffNames.split(",")) {
+			s = s.trim();
+			if (!s.isEmpty()) out.add(s);
+		}
+		return out;
+	}
+
+	/** @return true nếu tên chưa có (so không phân biệt hoa thường). */
+	public boolean addStaff(String name) {
+		if (name == null || name.isBlank()) return false;
+		List<String> list = staffList();
+		for (String s : list) {
+			if (s.equalsIgnoreCase(name.trim())) return false;
+		}
+		list.add(name.trim());
+		staffNames = String.join(",", list);
+		save();
+		return true;
+	}
+
+	public void removeStaff(String name) {
+		List<String> list = staffList();
+		list.removeIf(s -> s.equalsIgnoreCase(name));
+		staffNames = String.join(",", list);
+		save();
+	}
+
+	/** Khôi phục 26 tên staff gốc. */
+	public void resetStaff() {
+		staffNames = new AutoMineConfig().staffNames;
+		save();
 	}
 
 	private static int clamp(int v, int lo, int hi) {

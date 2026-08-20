@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-pannel",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": [
+        "C:\\Users\\Admin\\AppData\\Local\\Temp\\claude\\C--Users-Admin-Downloads-AutoBuilder\\5ff14283-b3fa-4395-acc8-e161be74dbf8\\scratchpad\\start-webpanel.js"
+      ],
+      "port": 3000
+    }
+  ]
+}

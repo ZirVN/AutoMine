@@ -31,11 +31,30 @@ import net.minecraft.world.World;
  * crooked aim.
  */
 public final class BlockBreaker {
-	private static final float TURN_DEGREES_PER_TICK = 22.0F;
+	/**
+	 * Tốc độ đưa mắt tới điểm ngắm, độ mỗi tick.
+	 *
+	 * <p>Nâng 22 → 32: mỗi lần đổi mục tiêu, số tick chỉ để quay đầu giảm gần
+	 * một phần ba, mà 32°/tick vẫn là cú vẩy chuột người thật làm được (một vòng
+	 * 180° mất ~6 tick), không phải kiểu snap tức thì của bot.
+	 */
+	private static final float TURN_DEGREES_PER_TICK = 32.0F;
+
+	/**
+	 * Mắt xê dịch dưới ngần này (bình phương, block/tick) thì coi là đứng yên.
+	 *
+	 * <p>0.01 block/tick — đi bộ thường ~0.13, rơi còn nhanh hơn nhiều, nên chỉ
+	 * lúc thật sự đứng chôn chân mới lọt qua.
+	 */
+	private static final double EYE_STILL_EPS_SQ = 1.0E-4;
 
 	private final MinecraftClient client;
 	private BlockPos aiming;
 	private Vec3d aimPoint;
+	/** Vị trí mắt tick trước — xem {@link #onTarget}. */
+	private double lastEyeX = Double.NaN;
+	private double lastEyeY;
+	private double lastEyeZ;
 	/**
 	 * The aim point {@link #aimOnly} settled on, before the block is armed.
 	 * {@link #tickArmed} adopts it verbatim.
@@ -58,10 +77,13 @@ public final class BlockBreaker {
 	 * {@link #aiming()} stays null, so {@code MinecraftClientMixin} cannot force a
 	 * swing. Used while lining the crosshair up on a cell.
 	 *
-	 * <p>The turn is <b>unconditional</b> — it happens on every call. The engine reads
+	 * <p>The turn keeps going until the crosshair is genuinely ON the block, and then
+	 * <b>stops</b>. It may not be gated on anything weaker than that — the engine reads
 	 * the live crosshair to decide when the aim has landed, and that crosshair is only
-	 * updated by the game <em>after</em> a rotation is applied, so refusing to turn
-	 * until the aim is already right would be a condition that can never come true.
+	 * updated by the game <em>after</em> a rotation is applied, so refusing to turn while
+	 * merely "close" would be a condition that can never come true. Once the ray really
+	 * does land on the block there is nothing left to correct, and every further degree
+	 * is pure head-twitching ({@link #onTarget}).
 	 *
 	 * @return false when no point on the block can be hit from here (the caller should
 	 *         reposition or build), true while lining up.
@@ -86,8 +108,50 @@ public final class BlockBreaker {
 		pendingPos = pos.toImmutable();
 		pendingPoint = point;
 
-		Rotations.turnTo(player, point, TURN_DEGREES_PER_TICK);
+		if (!onTarget(pos)) {
+			Rotations.turnTo(player, point, TURN_DEGREES_PER_TICK);
+		}
 		return true;
+	}
+
+	/**
+	 * Được phép BUÔNG TAY khỏi góc nhìn tick này chưa: tia ngắm thật đang nằm đúng
+	 * trên {@code pos} <b>và</b> con mắt đang đứng yên.
+	 *
+	 * <p>Vế đầu là để ngừng rung đầu: ngắm trúng rồi mà tick nào cũng gọi
+	 * {@link Rotations#turnTo} thì đầu cứ nhích qua nhích lại suốt cả lượt đập —
+	 * với block cứng là hàng trăm tick liên tiếp, thứ người chơi thật không bao
+	 * giờ làm.
+	 *
+	 * <p>Vế thứ hai là vế BẮT BUỘC phải có, và thiếu nó thì bản trước tự bắn vào
+	 * chân mình. Trong lúc {@code pressIntoTarget} ghì thân tiến vào bức tường
+	 * đang đục (hoặc lúc canh tâm nhích ngang), mắt vẫn trôi mỗi tick. Góc nhìn
+	 * đứng im + mắt trôi = tia quét dần trên mặt block, và tới lúc nó trượt sang
+	 * ô bên cạnh thì {@code Bridge.shouldForceBreaking} tắt, vanilla gọi
+	 * {@code cancelBlockBreaking} và TOÀN BỘ tiến độ đập bay sạch — cứ thế lặp,
+	 * block cứng không bao giờ vỡ. Ngắm lại theo mắt mỗi tick trong lúc thân
+	 * chuyển động chính là vòng kín giữ crosshair dính chặt vào block; chỉ khi
+	 * thân thật sự đứng yên thì mới có cái để mà buông.
+	 */
+	private boolean onTarget(BlockPos pos) {
+		ClientPlayerEntity player = client.player;
+		if (player == null) {
+			return false;
+		}
+		Vec3d eye = player.getEyePos();
+		boolean first = Double.isNaN(lastEyeX);
+		double dx = eye.x - lastEyeX;
+		double dy = eye.y - lastEyeY;
+		double dz = eye.z - lastEyeZ;
+		lastEyeX = eye.x;
+		lastEyeY = eye.y;
+		lastEyeZ = eye.z;
+		if (first || dx * dx + dy * dy + dz * dz > EYE_STILL_EPS_SQ) {
+			return false; // thân còn đang trôi — phải bám tia theo mắt
+		}
+		return client.crosshairTarget instanceof BlockHitResult hit
+				&& hit.getType() == HitResult.Type.BLOCK
+				&& hit.getBlockPos().equals(pos);
 	}
 
 	/**
@@ -127,7 +191,12 @@ public final class BlockBreaker {
 		aimPoint = point;
 
 		ToolSelector.selectBest(player, state);
-		Rotations.turnTo(player, point, TURN_DEGREES_PER_TICK);
+		// Đang bổ mà crosshair vẫn dính block thì KHÔNG quay nữa: giữ đầu bất động
+		// suốt lượt đập, vừa giống người chơi vừa khỏi rủi ro tia trượt khỏi block
+		// làm vanilla xoá tiến độ đập.
+		if (!onTarget(pos)) {
+			Rotations.turnTo(player, point, TURN_DEGREES_PER_TICK);
+		}
 		return true;
 	}
 

@@ -8,8 +8,11 @@ import com.automine.util.Rotations;
 import com.automine.util.SimInput;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.World;
 
 import java.util.List;
@@ -56,12 +59,46 @@ public final class MoveController {
 	 * ticks and the last few hundredths may never close. After this long we take
 	 * the spot we're on. Without it {@link #trackStall} would call centring a stall
 	 * and report BLOCKED, and the face would be abandoned to the layer sweep.
+	 *
+	 * <p>12 tick (0.6s), hạ từ 30: mọi nơi cần đứng CHUẨN TÂM giờ đều có máy căn
+	 * riêng phía engine (chốt căn giếng, luật thẳng hàng của mặt), nên nấn ná ở
+	 * đây chỉ là đứng dậm chân — "di chuyển nhanh như người bình thường" nghĩa là
+	 * tới nơi thì vào việc luôn.
 	 */
-	private static final int CENTER_LIMIT = 30;
+	private static final int CENTER_LIMIT = 12;
 	/** Within this distance we creep, for accuracy. */
 	private static final double CREEP_RANGE = 1.2;
-	private static final int STALL_LIMIT = 80;
+	/** Đứng ì bấy nhiêu tick (không đào, không nhích) thì tuyên bố TẮC — 2.5s,
+	 *  hạ từ 4s: kẹt là nhả BLOCKED sớm cho engine xoay bài khác (dọn chướng
+	 *  ngại, 3 nhát thẳng, đổi chỗ đứng) thay vì đứng nhìn tường thêm. */
+	private static final int STALL_LIMIT = 50;
 	private static final int REPATH_INTERVAL = 40;
+	/**
+	 * Lệch hướng dưới ngần này thì KHÔNG quay đầu — xem {@link #faceWalkDirection}.
+	 *
+	 * <p>8°: qua một block chỉ trôi ngang ~0.14, mà tới gần node góc lệch tự phình
+	 * ra nên vẫn được chỉnh trước khi lạc. Đổi lại, cả đoạn đường thẳng đầu đứng
+	 * yên tuyệt đối thay vì rung từng tick.
+	 */
+	private static final float WALK_YAW_DEADZONE = 8.0F;
+	/** Tốc độ quay khúc cua (độ/tick) — góc vuông hết ~8 tick, mượt như tay người. */
+	private static final float WALK_TURN_DEGREES = 12.0F;
+	/** Gần node hơn ngần này thì hướng tới nó là nhiễu, đừng quay theo. */
+	private static final double NO_TURN_RANGE = 0.75;
+	/**
+	 * Cua gắt hơn ngần này thì ĐỨNG LẠI QUAY rồi mới chạy tiếp.
+	 *
+	 * <p>Quay mượt mà vẫn ghì phím tiến nghĩa là suốt khúc cua thân chạy theo
+	 * hướng CŨ — cua 180° là gần một giây lao ngược, đủ để rơi xuống hố vừa đào.
+	 * Người chơi thật cũng khựng lại nửa nhịp khi phải quay ngoắt.
+	 */
+	private static final float SHARP_TURN_DEGREES = 50.0F;
+	/**
+	 * Mũi phải nằm trong nón này quanh hướng đục thì mới được ghì phím tiến vào
+	 * vách. Lấy đúng con số 40° mà {@code QuarryEngine.pressIntoTarget} đang dùng
+	 * cho cùng một việc — ghì thân vào block đang bổ — để hai nơi cư xử như một.
+	 */
+	private static final float WALK_DIG_CONE_DEGREES = 40.0F;
 	/**
 	 * How long standing still counts as "working" rather than "stuck" while the
 	 * breaker is actually chewing a block in our way. Server mines have very hard
@@ -78,6 +115,32 @@ public final class MoveController {
 	 * floor blocks, and every placement is rejected for intersecting the body.
 	 */
 	private static final double PILLAR_CENTER_MARGIN = 0.15;
+	/**
+	 * Bấm đi tới bấy nhiêu tick mà thân không nhúc nhích thì coi là kẹt và KÊ
+	 * BLOCK qua chỗ hụt. 6 tick ≈ 0.3 giây: đủ chắc là kẹt thật, chưa đủ lâu để
+	 * thành đứng hình.
+	 */
+	private static final int SNAG_BRIDGE_TICKS = 6;
+	/** Dưới ngần này block mỗi tick coi như đứng yên (đi bộ thường ~0.13/tick). */
+	private static final double SNAG_MOVE_EPS = 0.0016;
+	/** Kê block tối đa chừng này tick rồi buông, khỏi ôm tick thành đứng hình. */
+	private static final int BRIDGE_PATIENCE = 40;
+
+	/**
+	 * Failed hops in a row before the roof overhead is taken seriously. Three, per
+	 * the user: a block that merely looks solid often still leaves room for a
+	 * capped jump to squeeze the placement in, so digging any earlier just waves
+	 * the pickaxe about.
+	 */
+	private static final int HOPS_BEFORE_CEILING_DIG = 3;
+	/** How long one ceiling block may take before the column is written off (10s). */
+	private static final int CEILING_DIG_LIMIT = 200;
+	/**
+	 * Ceilings broken back-to-back without a single block going down underneath.
+	 * A climb is supposed to gain height; boring straight up forever means this
+	 * column is hopeless (a pit under a deep overhang) and another one is nearer.
+	 */
+	private static final int MAX_CEILING_DIGS = 6;
 
 	private final MinecraftClient client;
 	private final AutoMineConfig config;
@@ -102,23 +165,65 @@ public final class MoveController {
 	/** True while towering up: the climb must be finished before anything else. */
 	private boolean climbing;
 	/**
+	 * Latched: the climb is in its DIGGING half, chewing the block over its head.
+	 *
+	 * <p>Everything about the ceiling dig hangs off this one flag, and that is the
+	 * whole point. The bug the user kept hitting ("vừa cầm cúp vừa cầm block khiến
+	 * bị lặp lại và không làm được gì") is a hand fought over by two pieces of code
+	 * in the same tick: the placer selects a block slot every tick it runs, and
+	 * {@code tickArmed} selects the pickaxe every tick it runs, so alternating
+	 * between them swaps the hotbar twice a tick and neither the placement nor the
+	 * swing ever completes. With this flag, a climbing tick belongs to exactly one
+	 * of the two — pickaxe until the roof is gone, block after — and the swap
+	 * happens once per phase instead of once per tick.
+	 */
+	private boolean breakingCeiling;
+	/** The block over the head being removed, while {@link #breakingCeiling}. */
+	private BlockPos ceilingTarget;
+	private int ceilingTicks;
+	/** Ceilings dug in a row without a successful hop in between. */
+	private int ceilingDigs;
+	/**
 	 * The horizontal axis we're currently boring along, held until the offset on it
 	 * runs out. Recomputing "whichever axis is furthest" every tick made the tunnel
 	 * alternate axes step by step and come out as a diagonal staircase.
 	 */
 	private Direction.Axis digAxis;
 
-	/** Y range of the layer being worked on; nothing outside it may be broken. */
+	/** Floor of the layer being worked on: below this means "climb, don't burrow". */
 	private int digMinY = Integer.MIN_VALUE;
-	private int digMaxY = Integer.MAX_VALUE;
-
 	/**
-	 * The lava-adjacent cell {@link #digStep} refused to break on the way
-	 * somewhere. The engine reads this after a BLOCKED result and plugs the lava
-	 * so the route can be cut after all — without it, a face on the far side of a
-	 * lava pocket was simply unreachable and never got dug.
+	 * Hàng GIỮA của tầng — đúng cái hàng mà mặt 3x3 lấy tâm.
+	 *
+	 * <p>Đào đường đi bám theo hàng này chứ không theo tầm ngực của thân: bổ vào
+	 * ô giữa thì cúp 3x3 ăn trọn cột 3 ô (dưới - giữa - trên) của tầng, y hệt
+	 * một nhát đào mặt 9 ô. Nhờ vậy đường hầm mở ra cũng cao đúng 3 ô, mắt luôn
+	 * nhìn ngang, không còn cảnh cúi xuống bổ ô dưới chân.
 	 */
-	private BlockPos lavaObstacle;
+	private int digAimY = Integer.MIN_VALUE;
+	/** Tầm với engine bơm vào (đã gộp tầm server); 0 = chưa có, dùng config. */
+	private double digReach;
+
+	/** Vị trí tick trước, chỉ dùng cho việc phát hiện "đang đi mà không nhúc nhích". */
+	private double lastWalkX = Double.NaN;
+	private double lastWalkZ;
+	/** Số tick liên tiếp bấm đi tới mà thân đứng yên. */
+	private int snagTicks;
+	/**
+	 * Đang quay dở một khúc cua: phải quay cho xong mới thôi.
+	 *
+	 * <p>Không có chốt này thì bộ lọc {@link #WALK_YAW_DEADZONE} sẽ nhả tay ngay
+	 * khi còn lệch 8° — đầu dừng lửng lơ giữa khúc cua rồi tick sau lại thấy "lệch
+	 * quá" mà quay tiếp, thành ra giật cục đúng cái thứ đang muốn bỏ.
+	 */
+	private boolean turningCorner;
+	/** Số tick liên tiếp đang kê block gỡ kẹt. */
+	private int bridgeTicks;
+
+
+
+
+
 
 	public MoveController(MinecraftClient client, AutoMineConfig config, SimInput input,
 			BlockBreaker breaker, Selection selection) {
@@ -142,8 +247,32 @@ public final class MoveController {
 		pathIndex = 0;
 		pathAge = 0;
 		climbing = false;
+		breakingCeiling = false;
+		ceilingTarget = null;
+		ceilingTicks = 0;
+		ceilingDigs = 0;
 		digAxis = null;
+		snagTicks = 0;
+		bridgeTicks = 0;
+		turningCorner = false;
+		lastWalkX = Double.NaN;
 		placer.reset();
+	}
+
+	/**
+	 * Những ô mà mod TỰ KÊ ra gần đây (trụ leo lên, viên bắc qua chỗ hụt sàn).
+	 *
+	 * <p>Engine tra sổ này trước khi chọn ô để đào: kê xong rồi đào lại đúng viên
+	 * đó là tự rút sàn dưới chân mình, rơi xuống, kê lại, đào lại — vòng lặp user
+	 * báo ("đặt block xong lại đào block đó cứ lặp lại").
+	 */
+	public java.util.Set<BlockPos> placedCells() {
+		return placer.placedCells();
+	}
+
+	/** Quên sổ ô tự kê (sang tầng mới / bắt đầu lại). */
+	public void forgetPlaced() {
+		placer.forgetPlaced();
 	}
 
 	/**
@@ -152,6 +281,11 @@ public final class MoveController {
 	 */
 	public boolean isClimbing() {
 		return climbing;
+	}
+
+	/** True while the climb is chewing the roof above the head, for the status line. */
+	public boolean isBreakingCeiling() {
+		return breakingCeiling;
 	}
 
 	/**
@@ -167,16 +301,44 @@ public final class MoveController {
 	}
 
 	/**
-	 * Run one tick of towering up, if possible: centre the body over one column,
-	 * then drive the paced placer. @return true when the tick was consumed by the
-	 * climb; false when placing is off or there is nothing to build with.
+	 * Run one tick of towering up. A climb has two halves and a tick belongs to
+	 * exactly one of them:
+	 *
+	 * <ul>
+	 *   <li><b>Placing</b> — block in hand, look down, hop, drop one underneath.</li>
+	 *   <li><b>Digging</b> — after {@link #HOPS_BEFORE_CEILING_DIG} hops that came
+	 *       back down with nothing placed, the head is under a roof: hold still,
+	 *       look UP, take the pickaxe out and break the block above. When it is
+	 *       gone the hand goes back to the block and the climb carries on upward
+	 *       until it reaches the dig point — the user's "nhảy 3 lần mà không đặt
+	 *       được thì hướng lên trên, cầm cúp phá, xong quay về cầm block đặt tiếp".</li>
+	 * </ul>
+	 *
+	 * @return true when the tick was consumed by the climb; false when placing is
+	 *         off, there is nothing to build with, or this column is hopeless and
+	 *         the caller should relocate.
 	 */
 	private boolean tryPillarTick(ClientPlayerEntity player) {
 		if (!config.allowPlace) {
 			return false;
 		}
-		// The mixin breaks whatever the crosshair rests on, and we're about to look
-		// straight down at the block we intend to stand on.
+		// DIGGING half. Latched, so it keeps the hand until the roof is actually
+		// gone — never a tick of pickaxe followed by a tick of block.
+		if (breakingCeiling) {
+			return tickCeilingDig(player);
+		}
+		// Head under a roof: switch halves rather than hopping into it forever.
+		if (placer.failedHops() > HOPS_BEFORE_CEILING_DIG) {
+			if (startCeilingDig(player)) {
+				return tickCeilingDig(player);
+			}
+			// Nothing breakable up there (outside the box, bedrock, lava above):
+			// this column simply can't rise — let the caller find a nicer one.
+			climbing = false;
+			return false;
+		}
+		// PLACING half. The mixin breaks whatever the crosshair rests on, and we're
+		// about to look straight down at the block we intend to stand on.
 		breaker.cancel();
 		// Fallen between two blocks: get the whole body over ONE column before any
 		// hop, or the placement never lands (see PILLAR_CENTER_MARGIN).
@@ -188,9 +350,78 @@ public final class MoveController {
 			climbing = false;
 			return false;
 		}
+		if (placer.failedHops() == 0) {
+			ceilingDigs = 0; // the tower is rising again — the roof budget resets
+		}
 		climbing = true;
 		input.set(0.0F, 0.0F, jump[0], false);
 		return true;
+	}
+
+	/**
+	 * Take aim at the block over the head, if there is one worth breaking.
+	 *
+	 * @return true when the climb has switched to its digging half.
+	 */
+	private boolean startCeilingDig(ClientPlayerEntity player) {
+		World world = client.world;
+		if (world == null || ceilingDigs >= MAX_CEILING_DIGS) {
+			return false;
+		}
+		// Standing at Y the body fills Y and Y+1, so the block that stops a jump —
+		// and the one the placement needs out of the way — is Y+2.
+		BlockPos above = player.getBlockPos().up(2);
+		if (BlockUtil.passable(world, above) || !BlockUtil.isBreakable(world, above)) {
+			return false;
+		}
+		if (!selection.contains(above, TRAVEL_DIG_MARGIN)) {
+			return false; // outside the job: not ours to break, even to get out
+		}
+		breakingCeiling = true;
+		ceilingTarget = above.toImmutable();
+		ceilingTicks = 0;
+		ceilingDigs++;
+		return true;
+	}
+
+	/**
+	 * One tick of the digging half: stand still, aim up, let vanilla chew. Nothing
+	 * here touches the placer, so the hotbar keeps the pickaxe for the whole dig.
+	 */
+	private boolean tickCeilingDig(ClientPlayerEntity player) {
+		World world = client.world;
+		if (world == null || ceilingTarget == null) {
+			return endCeilingDig(false);
+		}
+		climbing = true;  // still a climb: the engine must not steal the tick
+		input.stop();     // no hopping into a block we are in the middle of breaking
+
+		if (BlockUtil.passable(world, ceilingTarget)) {
+			// Roof is open. Hand the tick back to the placing half with a clean
+			// slate, so the three-failed-hops counter doesn't instantly send us
+			// back here on a column that can now rise.
+			placer.reset();
+			return endCeilingDig(true);
+		}
+		if (++ceilingTicks > CEILING_DIG_LIMIT || !breaker.tickArmed(ceilingTarget, reach())) {
+			return endCeilingDig(false);
+		}
+		return true;
+	}
+
+	/**
+	 * Leave the digging half. {@code keepClimbing} false means the column is a
+	 * dead end and the caller should relocate.
+	 */
+	private boolean endCeilingDig(boolean keepClimbing) {
+		breakingCeiling = false;
+		ceilingTarget = null;
+		ceilingTicks = 0;
+		breaker.cancel();
+		if (!keepClimbing) {
+			climbing = false;
+		}
+		return keepClimbing;
 	}
 
 	/**
@@ -212,23 +443,44 @@ public final class MoveController {
 		return true;
 	}
 
-	/** The cell whose adjacent lava stopped the last {@link #moveTo}, or null. */
-	public BlockPos lavaObstacle() {
-		return lavaObstacle;
-	}
-
 	public Result moveTo(BlockPos target) {
-		lavaObstacle = null; // only ever describes the CURRENT call's failure
 		ClientPlayerEntity player = client.player;
 		World world = client.world;
 		if (player == null || world == null) {
 			return Result.BLOCKED;
 		}
 
+		// A ceiling dig in progress outranks everything, including a walkable route
+		// that happens to exist: half of it is a pickaxe swing that any other branch
+		// would cancel, and a dig cancelled every other tick never finishes.
+		if (breakingCeiling) {
+			return tickCeilingDig(player) ? Result.MOVING : Result.BLOCKED;
+		}
+
 		BlockPos feet = player.getBlockPos();
-		// The climb is over the moment we're no longer below where we're headed.
-		if (feet.getY() >= target.getY()) {
+		// CÚ LEO CHỈ XONG KHI ĐÃ ĐẶT CHÂN XUỐNG ĐẤT ở độ cao đích, không phải
+		// lúc chân THOÁNG ngang đích giữa cú nhảy.
+		//
+		// Bản cũ nhả cờ ngay khi feet.getY() >= đích — mà đỉnh mỗi cú nhảy đều
+		// chạm mốc đó một hai tick. Engine thấy "hết leo" là giật tick sang ngắm
+		// mặt đào (rút CÚP, input.stop giết luôn cú nhảy), viên block đang chờ đặt
+		// bị bỏ rơi, thân rơi lại xuống, lại leo, lại bị giật — chính là cảnh
+		// "block-cúp bị lặp lại khiến không đặt được" user quay được khi đứng
+		// dưới mặt đào đúng 1 block. Chốt theo isOnGround thì cả cú nhảy thuộc
+		// về cú leo, không ai chen được vào giữa.
+		if (climbing && feet.getY() >= target.getY() && player.isOnGround()) {
 			climbing = false;
+		}
+		// Trụ đang xây dở thì SỞ HỮU TRỌN TICK — kể cả mấy tick lơ lửng trên
+		// không. Đi tìm đường bộ hay đào ngang lúc này là mất nhịp nhảy-đặt của
+		// placer (nó đang ở pha RISING) và cái tay lại bị giành.
+		if (climbing) {
+			if (tryPillarTick(player)) {
+				return Result.MOVING;
+			}
+			// Trụ không lên nổi (hết block, trần chặn quá cữ): trả BLOCKED cho
+			// engine tìm chỗ đứng khác — tryPillarTick đã tự hạ cờ.
+			return Result.BLOCKED;
 		}
 
 		if (feet.equals(target)) {
@@ -272,6 +524,8 @@ public final class MoveController {
 			return Result.BLOCKED;
 		}
 
+		// (Trụ đang xây dở đã được chặn ở đầu hàm — tới đây là chắc chắn không leo.)
+
 		if (followWalkableRoute(player, world, feet, target)) {
 			return Result.MOVING;
 		}
@@ -289,6 +543,19 @@ public final class MoveController {
 				|| ++pathAge > REPATH_INTERVAL;
 		if (stale) {
 			path = LocalPath.find(world, feet, target, Math.max(1, 3));
+			// Đi vòng qua chỗ TRỐNG vẫn hơn là bổ xuyên đá: user muốn "ra chỗ
+			// trống mà đi cho dễ, chỗ nào khó mới cần đào tới đó". Nên ngưỡng bỏ
+			// lộ trình được nới rộng — chỉ khi đường bộ dài gấp ba lần đường chim
+			// bay mới coi là vòng vo vô ích và chuyển sang khoan thẳng. Đi bộ 4
+			// block nhanh hơn đào 1 block deepslate rất nhiều.
+			if (path != null && !path.isEmpty()) {
+				int straight = Math.abs(target.getX() - feet.getX())
+						+ Math.abs(target.getY() - feet.getY())
+						+ Math.abs(target.getZ() - feet.getZ());
+				if (path.size() > straight * 3 + 12) {
+					path = null;
+				}
+			}
 			pathGoal = target;
 			pathIndex = 0;
 			pathAge = 0;
@@ -315,7 +582,15 @@ public final class MoveController {
 
 		boolean lastNode = pathIndex == path.size() - 1;
 		boolean stepUp = node.getY() > feet.getY();
-		stepTowardCenter(player, node, lastNode, stepUp);
+		// Sprint is judged against the GOAL, not the next node: nodes sit one
+		// block apart, so the old per-node distance test could never trip and the
+		// bot walked everywhere. Far out = auto-run; inside ~3 blocks ease off and
+		// walk in — "chạy nhanh tới chỗ, tới nơi thì đi chậm, cứ thế lặp lại".
+		// Chạy sớm hơn: trước phải cách đích >3 block mới cho sprint, giờ chỉ cần
+		// >1.6 block. Trong hầm hẹp, đoạn 2-3 block giữa hai mặt đào chiếm phần
+		// lớn thời gian di chuyển — đi bộ hết cả đoạn đó là chậm thấy rõ.
+		boolean farFromGoal = horizontalDistSq(player, target) > 2.5;
+		stepTowardCenter(player, node, lastNode, stepUp, farFromGoal);
 		return true;
 	}
 
@@ -332,7 +607,8 @@ public final class MoveController {
 	 * settle it on a block centre, but the user does not want the crouch, so approach
 	 * accuracy is left entirely to {@link #creepInPlace} and the arrival thresholds.
 	 */
-	private void stepTowardCenter(ClientPlayerEntity player, BlockPos node, boolean precise, boolean stepUp) {
+	private void stepTowardCenter(ClientPlayerEntity player, BlockPos node, boolean precise, boolean stepUp,
+			boolean farFromGoal) {
 		double dx = node.getX() + 0.5 - player.getX();
 		double dz = node.getZ() + 0.5 - player.getZ();
 		double distSq = dx * dx + dz * dz;
@@ -340,14 +616,72 @@ public final class MoveController {
 		breaker.cancel(); // purely walking; don't let the mixin break anything
 
 		if (precise && distSq <= HOLD_YAW_RANGE * HOLD_YAW_RANGE) {
+			// Tới sát đích rồi: bỏ luôn khúc cua đang quay dở. Giữ chốt ở đây là
+			// tự cho phép mình quay đầu ngay trên ô đích — đúng cái xoay tại chỗ
+			// mà {@link #HOLD_YAW_RANGE} sinh ra để dập.
+			turningCorner = false;
 			creepInPlace(player, dx, dz);
 			return;
 		}
 
-		player.setYaw(Rotations.yawTo(dx, dz));
+		// Sát node thì hướng tới nó chỉ còn là nhiễu (lệch vài phần trăm block ra
+		// góc mấy chục độ) — đang quay dở khúc cua thì quay cho xong, còn không
+		// thì cứ đi thẳng, node kế tiếp mới là thứ quyết định hướng.
+		if (turningCorner || distSq >= NO_TURN_RANGE * NO_TURN_RANGE) {
+			if (faceWalkDirection(player, dx, dz) > SHARP_TURN_DEGREES) {
+				// Cua ngoắt: đứng lại quay cho xong đã. Ghì tiến trong lúc thân còn
+				// hướng cũ là chạy ngược đường suốt khúc cua.
+				input.stop();
+				snagTicks = 0; // đứng để quay, không phải kẹt — đừng bắt kê block
+				return;
+			}
+		}
+
+		// Kẹt vì hụt sàn thì kê một viên rồi bước qua (không nhảy — cơ chế nhảy
+		// đã bỏ theo yêu cầu user).
+		if (bridgeIfSnagged(player, Direction.getFacing(dx, 0.0, dz))) {
+			input.stop();
+			return;
+		}
+
 		boolean creep = precise && distSq <= CREEP_RANGE * CREEP_RANGE;
-		boolean sprint = config.allowSprint && !creep && !stepUp && distSq > 4.0;
+		boolean sprint = config.allowSprint && farFromGoal && !creep && !stepUp;
 		input.set(1.0F, 0.0F, stepUp && player.isOnGround(), sprint);
+	}
+
+	/**
+	 * Hướng mặt theo đường đi — <b>CHỈ QUAY KHI RẼ</b>.
+	 *
+	 * <p>Luật của user: "cần di chuyển tới chỗ rẽ mới xoay, không phải cứ xoay đầu
+	 * hoài". Bản cũ mỗi tick lại {@code setYaw} về đúng tâm node kế tiếp: node cách
+	 * nhau đúng một block nên chỉ cần thân trôi vài phần trăm là góc đã đổi, và đầu
+	 * rung liên tục suốt quãng đường thẳng — dấu hiệu bot rõ nhất mà người ngoài
+	 * nhìn thấy.
+	 *
+	 * <p>Hai tầng lọc:
+	 * <ul>
+	 *   <li>lệch dưới {@link #WALK_YAW_DEADZONE} thì KHÔNG đụng vào đầu — đi thẳng
+	 *       hơi xiên vẫn tới nơi, vì tới gần node góc lệch tự lớn dần rồi mới chỉnh,
+	 *       đúng kiểu người chơi chạy đường dài;</li>
+	 *   <li>đã quyết định rẽ thì {@link #turningCorner} chốt lại, quay mượt
+	 *       {@link #WALK_TURN_DEGREES} độ mỗi tick cho tới khi xong khúc cua — không
+	 *       bẻ ngoặt một phát, cũng không bỏ dở giữa chừng.</li>
+	 * </ul>
+	 *
+	 * @return góc còn phải quay TRƯỚC tick này (độ) — người gọi dùng để biết khi
+	 *         nào nên đứng lại quay cho xong ({@link #SHARP_TURN_DEGREES}).
+	 */
+	private float faceWalkDirection(ClientPlayerEntity player, double dx, double dz) {
+		float desired = Rotations.yawTo(dx, dz);
+		float diff = Math.abs(MathHelper.wrapDegrees(desired - player.getYaw()));
+		if (!turningCorner) {
+			if (diff < WALK_YAW_DEADZONE) {
+				return 0.0F; // vẫn coi như đúng hướng — giữ nguyên đầu
+			}
+			turningCorner = true;
+		}
+		turningCorner = Rotations.stepYawTo(player, desired, WALK_TURN_DEGREES);
+		return diff;
 	}
 
 	/**
@@ -372,10 +706,85 @@ public final class MoveController {
 		return offset > 0 ? 1.0F : -1.0F;
 	}
 
+	/**
+	 * Đang bấm đi tới mà thân không nhúc nhích thì trả true đúng MỘT tick để
+	 * nhảy — hệt như người chơi gặp bậc thềm hay góc tường thì nhảy phát qua.
+	 *
+	 * <p>Chỉ gọi từ các nhánh ĐI BỘ. Nhánh căn giữa ({@code creepInPlace}) cố ý
+	 * nhích rất chậm, gọi ở đó thì tick nào cũng thấy "đứng yên" và bot sẽ nhảy
+	 * loi choi ngay trên ô đích.
+	 */
+	/**
+	 * Đang đi mà đứng yên quá lâu thì BẮC BLOCK qua chỗ hụt, không nhảy.
+	 *
+	 * <p>Cơ chế nhảy đã bỏ hẳn theo yêu cầu user: nhảy vừa không giải quyết được
+	 * hố/khe (nhảy qua rồi vẫn rơi), vừa nhìn rõ là bot. Thay vào đó, khi kẹt thì
+	 * nhìn xuống ô sàn ngay trước mặt: hụt sàn thì kê một viên rồi bước qua, đó
+	 * là cách người chơi thật đi qua chỗ trống.
+	 *
+	 * @return true khi tick này đã bị việc kê block chiếm — người gọi không nên
+	 *         bấm phím đi nữa.
+	 */
+	private boolean bridgeIfSnagged(ClientPlayerEntity player, Direction step) {
+		double dx = player.getX() - lastWalkX;
+		double dz = player.getZ() - lastWalkZ;
+		boolean first = Double.isNaN(lastWalkX);
+		lastWalkX = player.getX();
+		lastWalkZ = player.getZ();
+
+		if (first || dx * dx + dz * dz > SNAG_MOVE_EPS) {
+			snagTicks = 0;
+			return false;
+		}
+		if (++snagTicks < SNAG_BRIDGE_TICKS || !config.allowPlace) {
+			return false;
+		}
+
+		World world = client.world;
+		if (world == null || step == null) {
+			return false;
+		}
+
+		// Ô SÀN ngay trước mặt: hụt (khí/nước/dung nham) thì kê một viên vào đó.
+		BlockPos gap = player.getBlockPos().offset(step).down();
+		if (!world.getBlockState(gap).isReplaceable()) {
+			bridgeTicks = 0;
+			return false; // không phải hụt sàn — để phần đào/đổi đường lo
+		}
+		// Kê mãi không xong (không có block, không có mặt tựa, server chặn) thì
+		// buông ra cho phần đi/đào bên dưới chạy — ôm tick vô hạn ở đây là biến
+		// thành đứng hình, thứ user vừa phàn nàn.
+		if (++bridgeTicks > BRIDGE_PATIENCE) {
+			return false;
+		}
+		breaker.cancel(); // kê block thì tay cầm block, không cầm cúp
+
+		if (placer.fillCell(player, gap, config.reachDistance)) {
+			return true;
+		}
+		bridgeTicks = 0;
+		return false;
+	}
+
 	// ---- carving a way through ----
 
 	private Result digToward(ClientPlayerEntity player, World world, BlockPos feet, BlockPos target) {
 		boolean overColumn = feet.getX() == target.getX() && feet.getZ() == target.getZ();
+
+		// BÊN DƯỚI ĐÍCH thì LEO TRƯỚC, tuyệt đối không đào ngang.
+		//
+		// Đây là luật user chốt: "phải cho nó 100% đặt block lên trên ngang với
+		// đúng tâm thì mới dừng cầm cúp và đi đào tới chỗ đó". Trước đây, khi
+		// đứng thấp hơn đích mà đường trước mặt bị chặn, mover đào ô ngang tầm
+		// ngực (rút CÚP) rồi tick sau lại nhảy đặt block (rút BLOCK) — hai việc
+		// giành nhau cái tay, hotbar đổi qua lại mỗi tick nên chẳng cái nào xong:
+		// đúng cảnh "vừa đào vừa đặt" trong ảnh. Giờ chừng nào chân còn thấp hơn
+		// đích thì chỉ có một việc duy nhất được phép chạy — xây trụ. Chỉ khi
+		// trụ không lên nổi (hết block, hoặc bị trần chặn quá số lần cho phép)
+		// mới trả tick lại cho phần đào/đi bên dưới.
+		if (feet.getY() < target.getY() && tryPillarTick(player)) {
+			return Result.MOVING;
+		}
 
 		// Descending: dig straight down once we're over the right column.
 		if (overColumn && feet.getY() > target.getY()) {
@@ -398,97 +807,202 @@ public final class MoveController {
 					&& tryPillarTick(player)) {
 				return Result.MOVING;
 			}
-			// Aim at the cell level with the chest and let the 3x3 slice take the whole
-			// column with it. Clearing the column cell by cell from the top down is what
-			// made the head rear up and drop on every single step of the tunnel — the
-			// "đầu cứ hướng lên trên, lặp lại liên tục" the user reported. One aim at the
-			// middle is both fewer swings and no vertical head movement at all.
-			int middle = clampToLayer(feet.getY() + 1);
-			BlockPos midCell = new BlockPos(ahead.getX(), middle, ahead.getZ());
-			if (!BlockUtil.passable(world, midCell)) {
-				input.stop();
-				return digStep(midCell);
-			}
-			// The body only needs one more cell: the one at the feet. Dig it only when
-			// it ALONE still blocks the step — the chest-height swing above usually took
-			// it (3x3), and the old bottom-up order aimed at the floor FIRST, which was
-			// the head-dip right after every face ("đào tâm xong lại cúi").
-			BlockPos floorCell = new BlockPos(ahead.getX(), clampToLayer(feet.getY()), ahead.getZ());
-			if (!BlockUtil.passable(world, floorCell)) {
-				input.stop();
-				return digStep(floorCell);
+			// ĐÀO ĐƯỜNG = Y HỆT ĐÀO MẶT 9 Ô (yêu cầu của user: "cách đào nó sao
+			// chép phải y hệt lúc đào 9 ô"). Luôn bổ vào ô ở HÀNG GIỮA TẦNG phía
+			// trước — cùng cái hàng mà mặt 3x3 lấy tâm — nên một nhát ăn trọn cột
+			// 3 ô của tầng và mắt luôn nhìn ngang.
+			//
+			// Bản trước bổ theo tầm ngực của THÂN rồi, nếu ô dưới chân còn kẹt,
+			// bổ thêm phát nữa vào ô sát chân: chính hai nhát đó là cảnh "đào rồi
+			// cúi, đào rồi cúi". Giờ bỏ hẳn nhát cúi — cột đã bị nhát giữa lấy
+			// sạch, nếu vì lý do gì đó vẫn còn thì đồng hồ kẹt sẽ lo (đổi chỗ
+			// đứng), chứ không cúi gằm xuống chân.
+			int aimY = digAimY != Integer.MIN_VALUE ? digAimY : feet.getY() + 1;
+			BlockPos boreCell = new BlockPos(ahead.getX(), aimY, ahead.getZ());
+			BlockPos chestCell = new BlockPos(ahead.getX(), feet.getY() + 1, ahead.getZ());
+			boolean boreBlocked = !BlockUtil.passable(world, boreCell);
+			boolean chestBlocked = !BlockUtil.passable(world, chestCell);
+
+			if (boreBlocked || chestBlocked) {
+				// VỪA ĐI VỪA ĐÀO: ghì phím tiến vào bức tường đang đục thay vì
+				// đứng khựng. Thân ép vào đá nên crosshair không rời block, vỡ
+				// phát nào bước vào phát đó — đúng kiểu người chơi đục hầm.
+				//
+				// KHÔNG setYaw ở đây: ngay dưới, digStep sẽ ngắm vào chính ô đang
+				// chắn — mà ô đó nằm đúng hướng đi. Ghi yaw trước rồi để breaker
+				// ghi đè trong cùng một tick là hai lệnh quay chồng nhau, đầu giật
+				// một nhịp thừa mỗi lần chạm tường.
+				//
+				// BÙ LẠI PHẢI CÓ CÁI NÓN NÀY. Bỏ setYaw mà vẫn ghì tiến vô điều
+				// kiện thì phím tiến chạy theo yaw CŨ: lệch bao nhiêu độ là bấy
+				// nhiêu vận tốc trượt ngang, thân lết dọc vách, tia ngắm quét khỏi
+				// block và vanilla xoá sạch tiến độ đập. Chỉ ghì khi mũi đã gần
+				// vuông góc với vách; còn lệch thì đứng yên một hai tick cho
+				// breaker ngắm xong đã — đứng im lúc đó cũng là "đầu không xoay".
+				boolean facingWall = Math.abs(MathHelper.wrapDegrees(
+						Rotations.yawTo(step.getOffsetX(), step.getOffsetZ()) - player.getYaw()))
+						<= WALK_DIG_CONE_DEGREES;
+
+				// Cùng chuẩn tốc độ với đào mặt 9 ô (user: "lấy cái đào + di chuyển
+				// của 9 ô lắp vào các cái đào khi di chuyển tới ô đỏ"): đích còn xa
+				// thì SPRINT — tường vỡ nhát nào là lao vào nhát đó bằng đúng tốc độ
+				// chạy, không lững thững đi bộ qua từng khúc hầm.
+				boolean sprint = facingWall && config.allowSprint
+						&& horizontalDistSq(player, target) > 2.5;
+
+				input.set(facingWall ? 1.0F : 0.0F, 0.0F, false, sprint);
+
+				// Ưu tiên hàng giữa tầng, nhưng CHỈ khi thật sự bổ tới được nó.
+				// Nếu không (đứng thấp/cao hơn tầng, bị vật khác che), rơi về ô
+				// ngay tầm ngực. Trước đây cứ nhắm mù vào hàng giữa: với không
+				// tới thì breaker im, mà digStep vẫn báo MOVING — engine tưởng
+				// đang làm việc nên ĐỨNG IM luôn, đúng cảnh user gặp.
+				Result dug;
+
+				if (boreBlocked && breaker.canReach(boreCell, reach())) {
+					dug = digStep(boreCell);
+				} else if (chestBlocked) {
+					dug = digStep(chestCell);
+				} else {
+					dug = digStep(boreCell); // để digStep tự báo BLOCKED nếu chịu
+				}
+				// Không bổ được thì cũng đừng ôm lệnh tiến vừa bấm: người gọi sẽ
+				// xoay cách khác, mà phím tiến còn kẹt là thân vẫn lầm lũi đi theo
+				// hướng cũ suốt tick đó.
+				if (dug == Result.BLOCKED) {
+					input.stop();
+				}
+				return dug;
 			}
 			breaker.cancel();
 			// Face straight down the tunnel we're cutting, not at the target off to one
 			// side — heading diagonally is what scraped the player along the walls.
-			player.setYaw(Rotations.yawTo(step.getOffsetX(), step.getOffsetZ()));
-			input.set(1.0F, 0.0F, false, false);
+			// Hướng hầm là bốn hướng chính, nên qua bộ lọc khúc cua thì đầu chỉ động
+			// đúng lúc ĐỔI TRỤC đào, còn chạy dọc hầm là bất động.
+			if (faceWalkDirection(player, step.getOffsetX(), step.getOffsetZ()) > SHARP_TURN_DEGREES) {
+				// Đổi trục hầm là cua vuông góc trở lên: quay xong hẵng bước, kẻo
+				// bước ngang vào vách rồi lại tưởng kẹt mà đi kê block.
+				input.stop();
+				snagTicks = 0;
+				return Result.MOVING;
+			}
+			// Kẹt vì hụt sàn trong hầm (đào trúng hang) thì kê viên rồi đi tiếp.
+			if (bridgeIfSnagged(player, step)) {
+				input.stop();
+				return Result.MOVING;
+			}
+			// Open stretch: auto-run while the goal is still far, walk the last bit.
+			boolean sprint = config.allowSprint && horizontalDistSq(player, target) > 2.5;
+			input.set(1.0F, 0.0F, false, sprint);
 			return Result.MOVING;
 		}
 		digAxis = null;
 
-		// Right column but too low: clear the ceiling, then tower up out of the hole.
+		// Right column but too low: tower up out of the hole. BLOCK ONLY — the
+		// pickaxe never comes out for a climb ("vứt cái cúp đi, chỉ để bắc block
+		// thôi"). A climb that can't proceed (no blocks, or hops keep failing
+		// under a roof) reports BLOCKED, and the engine's reposition machinery
+		// walks to a nicer column and pillars there instead ("bị kẹt thì tìm chỗ
+		// khác đẹp để bắc lên").
 		if (feet.getY() < target.getY()) {
-			BlockPos above = feet.up().up();
-			// Only clear the ceiling when a climb is not already under way. Digging in the
-			// middle of a tower-up is the other half of the tool-swapping the user saw:
-			// digStep selects a pickaxe, the next tick's placer.tick selects a block again,
-			// and the two fight over the hand every tick so the placement never lands.
-			// Finish the hop first — the ceiling is still there to deal with afterwards.
-			if (!climbing && !BlockUtil.passable(world, above)) {
-				input.stop();
-				return digStep(above);
-			}
 			if (tryPillarTick(player)) {
 				return Result.MOVING;
 			}
-			// Nothing to build with. If the ceiling is what's stopping us, dig it now that
-			// no climb is in progress to fight over the hand.
 			climbing = false;
-			if (!BlockUtil.passable(world, above)) {
-				input.stop();
-				return digStep(above);
-			}
-			return Result.BLOCKED; // nothing to build with and nothing to climb
+			return Result.BLOCKED;
 		}
 
 		input.stop();
 		return Result.MOVING;
 	}
 
-	/** Keep {@code y} inside the layer we're allowed to break in. */
-	private int clampToLayer(int y) {
-		return Math.max(digMinY, Math.min(digMaxY, y));
+	/**
+	 * The floor of the layer currently being mined. Not a wall for travel-digging
+	 * (digStep ranges the whole box plus its margin) — it only tells the mover
+	 * when it is beneath the layer and must climb rather than burrow. The old
+	 * upper bound was a write-only field that read as load-bearing; gone.
+	 */
+	public void setLayerFloor(int minY) {
+		this.digMinY = minY;
+	}
+
+	/** Hàng giữa của tầng — đường đào của mọi nhát bổ ngang. Xem {@link #digAimY}. */
+	public void setDigAimY(int y) {
+		this.digAimY = y;
 	}
 
 	/**
-	 * Restrict what clearing a path is allowed to break to the layer currently
-	 * being mined. Without this the mover would tunnel through the layers below on
-	 * its way somewhere, which is what made the dig look so scattered.
+	 * Tầm với thật sự dùng khi đào đường — engine bơm vào mỗi tick.
+	 *
+	 * <p>Server mine cho tầm với dài hơn 4.5 của config (cúp riêng của server).
+	 * Lõi đào mặt 9 ô vốn đã dùng {@code max(config, getBlockInteractionRange())},
+	 * còn phần đào đường thì kẹt ở 4.5 — nên cùng một bức tường, mặt 9 ô bổ được
+	 * từ xa mà đào đường phải lết sát mới bổ. Dùng chung một con số thì hai bên
+	 * mới "y hệt" như user yêu cầu.
 	 */
-	public void setLayerBounds(int minY, int maxY) {
-		this.digMinY = minY;
-		this.digMaxY = maxY;
+	public void setReach(double reach) {
+		this.digReach = Math.max(config.reachDistance, reach);
 	}
 
-	/** Mine a block that is in the way, refusing anything outside the selection or layer. */
+	private double reach() {
+		return digReach > 0 ? digReach : config.reachDistance;
+	}
+
+	/**
+	 * How far outside the box travel-digging may stray.
+	 *
+	 * <p>MỘT block, không phải hai. Lý do lề này tồn tại là ô đứng đầu dãy nằm
+	 * đúng MỘT block ngoài rìa — lề 2 cho phép khoét thêm một lớp nữa quanh vùng,
+	 * đúng cái user nhìn thấy ("nó cứ đào ra ngoài 1-2 block"). Kẹt thật sự thì
+	 * đã có thang cứu ba-nhát-thẳng bổ từ mép vào trong, không cần khoét rộng.
+	 */
+	private static final int TRAVEL_DIG_MARGIN = 1;
+
+	/**
+	 * Mine a block that is in the way. Travel-digging is deliberately loose, per
+	 * the user: "đào thừa ra ngoài cũng không sao, cứ đào xong rồi tiếp tục hướng
+	 * đi của mình". The cells that wedge a row change live just OUTSIDE the box —
+	 * a row-start stand cell sits one block past the rim — and refusing to break
+	 * them is what froze the bot at "hàng N · 1/71" every time a new row began.
+	 * The margin only stops it wandering off into the wider map.
+	 */
 	private Result digStep(BlockPos pos) {
 		World world = client.world;
-		if (!selection.contains(pos)) {
-			return Result.BLOCKED; // never dig outside the marked box
-		}
-		if (pos.getY() < digMinY || pos.getY() > digMaxY) {
-			return Result.BLOCKED; // and never outside the layer we're on
+		if (!selection.contains(pos, TRAVEL_DIG_MARGIN)) {
+			return Result.BLOCKED; // far outside the job — not ours to break
 		}
 		if (!BlockUtil.isBreakable(world, pos)) {
 			return Result.BLOCKED;
 		}
-		if (config.avoidLava && BlockUtil.lavaAdjacent(world, pos)) {
-			lavaObstacle = pos.toImmutable(); // the engine can plug this and retry
+		// ĐÀO ĐƯỜNG DÙNG ĐÚNG LỐI ĐÀO CỦA MẶT 9 Ô: ngắm trước, chỉ rút cúp khi
+		// crosshair THẬT SỰ đã nằm trên ô đó (yêu cầu user: "đào 100% y hệt lúc
+		// đào 9 ô"). Bổ khi crosshair chưa tới nơi thì mixin cũng không cho vung,
+		// chỉ tổ vung cúp trong không khí.
+		//
+		// Tầm với là reach() — TẦM SERVER, cùng con số mà chỗ CHỌN ô (canReach ở
+		// digToward) đã dùng. Bản trước chọn bằng tầm dài rồi bổ bằng 4.5 cứng:
+		// ô nằm trong khoảng 4.5..tầm-server được chọn xong lại bị chính hàm này
+		// trả BLOCKED — đúng nghịch lý "mặt 9 ô bổ được từ xa mà đào đường phải
+		// lết sát mới bổ" ghi ở setReach.
+		if (crosshairOn(pos)) {
+			if (!breaker.tickArmed(pos, reach())) {
+				return Result.BLOCKED;
+			}
+			return Result.MOVING;
+		}
+		// Báo thật: ngắm không tới thì KHÔNG được nói là đang đi. Bản trước luôn
+		// trả MOVING nên engine tưởng đang tiến triển và ĐỨNG IM chờ mãi.
+		if (!breaker.aimOnly(pos, reach())) {
 			return Result.BLOCKED;
 		}
-		breaker.tickArmed(pos, config.reachDistance);
 		return Result.MOVING;
+	}
+
+	/** Crosshair thật có đang nằm đúng trên {@code pos} không. */
+	private boolean crosshairOn(BlockPos pos) {
+		return client.crosshairTarget instanceof BlockHitResult hit
+				&& hit.getType() == HitResult.Type.BLOCK
+				&& hit.getBlockPos().equals(pos);
 	}
 
 	// ---- helpers ----

@@ -13,6 +13,7 @@ import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 
 /**
@@ -39,8 +40,27 @@ public final class BlockPlacer {
 	 * breaker's turn: the jump apex window is only a few ticks long.
 	 */
 	private static final float TURN_DEGREES_PER_TICK = 45.0F;
-	/** Don't hop until the view is at least this far down — the click needs it. */
-	private static final float MIN_PITCH_TO_JUMP = 60.0F;
+	/**
+	 * Don't hop until the view is at least this far down — the click needs it.
+	 *
+	 * <p>85°, không phải 60°. Ở 60° tia nhìn chạm sàn cách chân gần một block
+	 * (1.62 / tan 60° ≈ 0.93), tức con trỏ đang nằm trên CỘT BÊN CẠNH: cú click
+	 * đầu tiên của mỗi lần nhảy hoặc trượt ô hoặc bị từ chối, đúng kiểu "đặt
+	 * block mấy lúc bị lỗi". Nhìn gần thẳng đứng thì con trỏ nằm ngay dưới chân,
+	 * và {@link #aimStraightDown} vẫn tới đó sau đúng hai tick.
+	 */
+	private static final float MIN_PITCH_TO_JUMP = 85.0F;
+
+	/**
+	 * Sổ ô VỪA TỰ KÊ, giữ lại tối đa chừng này ô.
+	 *
+	 * <p>Có sổ này vì một lý do rất cụ thể: block mình vừa kê ra để bước qua (hoặc
+	 * để leo lên) nằm ngay trong vùng đào, nên lượt vét coi nó là "block còn sót"
+	 * rồi đào lại — hụt sàn, kê tiếp, đào tiếp… đúng vòng lặp user thấy ("đặt block
+	 * xong lại đào block đó, cứ lặp lại"). Engine tra sổ này để chừa ra đúng lúc
+	 * nó còn đang gánh thân mình.
+	 */
+	private static final int PLACED_MEMORY = 64;
 
 	private enum Phase {READY, RISING, PLACED, SETTLE}
 
@@ -48,6 +68,10 @@ public final class BlockPlacer {
 	private Phase phase = Phase.READY;
 	private BlockPos base;
 	private int timer;
+	/** Hops in a row that ended back on the ground with no block placed. */
+	private int failedHops;
+	/** Ô đã tự kê ra (mới nhất ở cuối) — xem {@link #PLACED_MEMORY}. */
+	private final java.util.LinkedHashSet<BlockPos> placed = new java.util.LinkedHashSet<>();
 
 	public BlockPlacer(MinecraftClient client) {
 		this.client = client;
@@ -57,6 +81,42 @@ public final class BlockPlacer {
 		phase = Phase.READY;
 		base = null;
 		timer = 0;
+		failedHops = 0;
+		// CỐ Ý không xoá {@link #placed}: mover reset rất thường xuyên (mỗi lần đổi
+		// đích), mà sổ ô tự kê phải sống lâu hơn thế thì mới chặn được vòng
+		// kê-rồi-đào. Chỉ {@link #forgetPlaced()} mới xoá.
+	}
+
+	/** Sổ ô tự kê gần đây — engine tra để khỏi đào lại chính cái mình vừa kê. */
+	public java.util.Set<BlockPos> placedCells() {
+		return placed;
+	}
+
+	/** Quên sạch sổ ô tự kê (đổi tầng, /start lại). */
+	public void forgetPlaced() {
+		placed.clear();
+	}
+
+	private void notePlaced(BlockPos pos) {
+		BlockPos key = pos.toImmutable();
+		placed.remove(key); // đưa lên cuối hàng: ô mới kê là ô "nóng" nhất
+		placed.add(key);
+		while (placed.size() > PLACED_MEMORY) {
+			java.util.Iterator<BlockPos> oldest = placed.iterator();
+			oldest.next();
+			oldest.remove();
+		}
+	}
+
+	/**
+	 * How many hops in a row have come back down empty-handed. The caller uses
+	 * this to decide when the ceiling genuinely needs the pickaxe: per the user,
+	 * only after MORE THAN THREE straight failed jumps — a solid-looking block
+	 * overhead often still leaves room enough for a capped jump to get the
+	 * placement in, so digging pre-emptively just waves the pickaxe around.
+	 */
+	public int failedHops() {
+		return failedHops;
 	}
 
 	/** @return the hotbar slot holding a full solid block, or -1 if there is none. */
@@ -76,17 +136,6 @@ public final class BlockPlacer {
 
 	public static boolean hasBuildingBlock(ClientPlayerEntity player) {
 		return findBuildingBlock(player) >= 0;
-	}
-
-	/** Whether {@code pos} touches at least one solid full cube to place against. */
-	public static boolean hasSolidNeighbor(World world, BlockPos pos) {
-		for (Direction dir : Direction.values()) {
-			BlockState state = world.getBlockState(pos.offset(dir));
-			if (state.isOpaqueFullCube() && state.getFluidState().isEmpty()) {
-				return true;
-			}
-		}
-		return false;
 	}
 
 	/**
@@ -127,8 +176,16 @@ public final class BlockPlacer {
 			timer--;
 			return true;
 		}
-		Rotations.turnTo(player, aim, TURN_DEGREES_PER_TICK);
-		if (placeUnder(world, target)) {
+		// BẤM KHI ĐÃ NGẮM XONG, không bấm trong lúc còn đang quay.
+		//
+		// crosshairTarget được tính từ hướng nhìn của tick TRƯỚC, nên bấm ngay
+		// trong tick vừa xoay là bấm theo con trỏ cũ: hoặc trượt sang ô khác,
+		// hoặc bị server từ chối — đúng kiểu "đặt block mấy lúc bị lỗi". turnTo
+		// trả true khi hướng nhìn đã nằm trong 2.5°, tức con trỏ hiện tại đã
+		// đúng chỗ, lúc đó mới click.
+		boolean onAim = Rotations.turnTo(player, aim, TURN_DEGREES_PER_TICK);
+
+		if (onAim && placeUnder(world, target)) {
 			timer = PLACE_RETRY_TICKS;
 		}
 		return true;
@@ -136,7 +193,17 @@ public final class BlockPlacer {
 
 	/**
 	 * The most eye-facing solid-neighbour face that would grow a block into
-	 * {@code target}, or null when no face both faces the player and is in reach.
+	 * {@code target}, or null when no face is both in reach and <b>genuinely
+	 * visible</b> from where we stand.
+	 *
+	 * <p>Facing the eye is not enough on its own: a wall between us and the pool
+	 * lets a face still "point at" the eye, and clicking it was the reach-through
+	 * the user called out ("chỉ khi thấy mới lấp chứ không được với tay lấp xuyên
+	 * qua tường"). Every candidate is therefore ray-traced the same way vanilla
+	 * traces the crosshair — the ray must actually land on that support block —
+	 * so the mod only ever plugs what a player could see and click from here.
+	 * When nothing passes, {@code fillCell} returns false and the engine walks to
+	 * a spot with a real line of sight instead.
 	 */
 	private static Vec3d visibleSupportAim(World world, ClientPlayerEntity player, BlockPos target, double reach) {
 		Vec3d eye = player.getEyePos();
@@ -156,12 +223,47 @@ public final class BlockPlacer {
 			double dot = face.getOffsetX() * (eye.x - point.x)
 					+ face.getOffsetY() * (eye.y - point.y)
 					+ face.getOffsetZ() * (eye.z - point.z);
-			if (dot > bestDot) {
-				bestDot = dot;
-				best = point;
+			if (dot <= bestDot || !canSee(world, player, eye, support, point)) {
+				continue;
 			}
+			bestDot = dot;
+			best = point;
 		}
 		return best;
+	}
+
+	/** Does a ray from {@code eye} to {@code point} actually land on {@code support}? */
+	private static boolean canSee(World world, ClientPlayerEntity player, Vec3d eye, BlockPos support, Vec3d point) {
+		BlockHitResult hit = world.raycast(new RaycastContext(
+				eye, point, RaycastContext.ShapeType.OUTLINE, RaycastContext.FluidHandling.NONE, player));
+		return hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(support);
+	}
+
+	/**
+	 * Whether {@code target} could be filled from {@code stand} — the same
+	 * visibility rule as {@link #visibleSupportAim}, but for a stance we have not
+	 * walked to yet. Lets the engine pick a spot that can actually see the cell
+	 * rather than one that merely sits close to it.
+	 */
+	public static boolean canFillFrom(World world, ClientPlayerEntity player, BlockPos stand, BlockPos target,
+			double reach) {
+		Vec3d eye = new Vec3d(stand.getX() + 0.5, stand.getY() + player.getStandingEyeHeight(),
+				stand.getZ() + 0.5);
+		for (Direction dir : Direction.values()) {
+			BlockPos support = target.offset(dir);
+			BlockState state = world.getBlockState(support);
+			if (!state.isOpaqueFullCube() || !state.getFluidState().isEmpty()) {
+				continue;
+			}
+			Vec3d point = BlockUtil.faceCenter(support, dir.getOpposite());
+			if (eye.squaredDistanceTo(point) > reach * reach) {
+				continue;
+			}
+			if (canSee(world, player, eye, support, point)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -221,8 +323,10 @@ public final class BlockPlacer {
 				aimStraightDown(player);
 				if (!world.getBlockState(step).isAir()) {
 					phase = Phase.PLACED; // there's something to land on
+					failedHops = 0;
 				} else if (player.isOnGround()) {
 					// Back down without getting one in; pause, then try again.
+					failedHops++;
 					phase = Phase.READY;
 					timer = SETTLE_TICKS;
 				} else if (timer == 0 && clearOf(player, step) && placeUnder(world, step)) {
@@ -307,6 +411,7 @@ public final class BlockPlacer {
 				&& success.swingSource() == ActionResult.SwingSource.CLIENT) {
 			client.player.swingHand(Hand.MAIN_HAND);
 		}
+		notePlaced(target); // vào sổ để lượt vét khỏi đào lại đúng viên vừa kê
 		// A click went out either way — pace the next one even if this was refused,
 		// or a rejected placement would go straight back to machine-gunning.
 		return true;

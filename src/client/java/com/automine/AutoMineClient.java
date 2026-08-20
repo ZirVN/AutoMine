@@ -11,6 +11,7 @@ import com.automine.util.AutoEat;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
@@ -18,7 +19,6 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.item.Items;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
@@ -36,22 +36,40 @@ public final class AutoMineClient implements ClientModInitializer {
 	public static AutoMineConfig CONFIG;
 	public static Selection SELECTION;
 	public static QuarryEngine ENGINE;
+	public static com.automine.spotify.SpotifyHudOverlay SPOTIFY;
+	/** Phiên bản đang chạy, in kèm lệnh /start — để biết chắc jar nào đang load. */
+	public static String VERSION = "dev";
+
+	/** Tên file jar mà class này được nạp từ đó — vũ khí bắt jar lậu trong mods/. */
+	private static String jarOf(Class<?> type) {
+		try {
+			String path = type.getProtectionDomain().getCodeSource().getLocation().getPath();
+			int slash = path.lastIndexOf('/');
+			return slash >= 0 ? path.substring(slash + 1) : path;
+		} catch (Throwable t) {
+			return "không rõ (" + t.getClass().getSimpleName() + ")";
+		}
+	}
 
 	@Override
 	public void onInitializeClient() {
+		// The mixins live in the jar and can't call this payload class directly,
+		// so they call Bridge; register the real implementations here.
+		Bridge.forceBreaking = AutoMineClient::shouldForceBreaking;
+		Bridge.holdingUseKey = mc -> AutoEat.isHoldingUseKey((MinecraftClient) mc);
+
+		FabricLoader.getInstance().getModContainer("automine").ifPresent(
+				container -> VERSION = "v" + container.getMetadata().getVersion().getFriendlyString());
+
 		CONFIG = AutoMineConfig.loadOrCreate(FabricLoader.getInstance().getConfigDir());
 		SELECTION = new Selection();
 		ENGINE = new QuarryEngine(MinecraftClient.getInstance(), CONFIG, SELECTION);
 
 		new ClientCommands().register();
 
-		// Xẻng vàng (trái = điểm 1, phải = điểm 2) được xử lý trong
-		// MinecraftClientMixin -> markCornerWithShovel, KHÔNG qua Fabric API nữa.
-		// Attack/UseBlockCallback có hai cái dở: trả SUCCESS thì Fabric vẫn gửi
-		// packet tương tác lên server (đụng claim tool — GriefPrevention cũng dùng
-		// đúng xẻng vàng), và trên client tuỳ biến event này không bắn ổn định —
-		// chính là vụ "đánh dấu mà không thấy gọi /sel". Mixin chặn ở doAttack /
-		// doItemUse: chưa có packet nào kịp rời client.
+		// Đánh dấu vùng chỉ còn qua /sel 1, /sel 2 hoặc menu — tính năng "xẻng vàng
+		// đánh dấu" đã bỏ hẳn theo yêu cầu (nó nuốt click chuột và đụng claim tool
+		// của server, vốn cũng dùng đúng cây xẻng vàng).
 
 		// Unbound by default so the user picks the keys in Options -> Controls.
 		KeyBinding menuKey = key("key.automine.menu");
@@ -63,9 +81,23 @@ public final class AutoMineClient implements ClientModInitializer {
 		StatusHud hud = new StatusHud();
 		HudElementRegistry.addLast(Identifier.of("automine", "status"),
 				(context, tickCounter) -> hud.render(context));
+		// Staff List HUD (góc phải-trên, chỉ hiện khi có staff online).
+		HudElementRegistry.addLast(Identifier.of("automine", "staff"),
+				(context, tickCounter) -> com.automine.util.StaffGuard.renderHud(context));
+		// Thẻ "đang phát" Spotify — port từ SpotifyHud 1.21.4, chạy thuần Fabric.
+		SPOTIFY = new com.automine.spotify.SpotifyHudOverlay();
+		HudElementRegistry.addLast(Identifier.of("automine", "spotify"),
+				(context, tickCounter) -> SPOTIFY.render(context));
 		SelectionRenderer.register();
 
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
+			// (Khối tự khai jar khi vào thế giới đã GỠ theo lệnh user 2026-08-20 —
+			// nhiệm vụ chẩn đoán vụ "Failed to load class" đã xong. Muốn kiểm bản
+			// đang chạy: dòng /start vẫn in "· v..." như cũ.)
+			// Staff List + Auto Sign: chạy đầu tick — staff online là tạm dừng máy đào ngay.
+			com.automine.util.StaffGuard.tick(client);
+			// Dính nước/dung nham giữa lúc đào → cảnh báo Discord (webhook + ping id).
+			com.automine.util.FluidAlert.tick(client);
 			// Phím tắt xử lý TRƯỚC auto-eat, để nút Stop vẫn ăn được cả lúc đang nhai.
 			while (menuKey.wasPressed()) {
 				if (client.player != null) {
@@ -102,47 +134,20 @@ public final class AutoMineClient implements ClientModInitializer {
 				}
 			} else if (ENGINE.state() == QuarryEngine.State.PAUSED && ENGINE.isAutoPaused()
 					&& !AutoEat.checkAndEat(client)) {
-				ENGINE.resume();
+				// resumeFromEating, KHÔNG phải resume(): resume() dọn sạch trạng
+				// thái đang làm dở (sổ ô đã đào, ba nhát đầu dãy, hai nhát tụt
+				// tầng) — hợp lý cho /resume của người dùng, nhưng ở đây chỉ là
+				// ngắt hai giây để nhai táo.
+				ENGINE.resumeFromEating();
 			}
 
 			ENGINE.tick();
 		});
-	}
 
-	/** Last corner marked by the shovel, so a held button doesn't spam the chat. */
-	private static int lastMarkCorner;
-	private static BlockPos lastMarkPos;
-
-	/**
-	 * Mark a selection corner because the player clicked while holding a golden
-	 * shovel. Called from {@code MinecraftClientMixin} at the head of
-	 * {@code doAttack} (which = 1) and {@code doItemUse} (which = 2).
-	 *
-	 * @return true when the click was ours — the caller then swallows it, so the
-	 *         shovel never punches the block and no interact packet reaches the
-	 *         server (some servers bind the golden shovel to their own tools).
-	 */
-	public static boolean markCornerWithShovel(int which) {
-		MinecraftClient mc = MinecraftClient.getInstance();
-		if (CONFIG == null || !CONFIG.goldenShovelMark || mc.player == null) {
-			return false;
-		}
-		if (mc.player.getMainHandStack().getItem() != Items.GOLDEN_SHOVEL) {
-			return false;
-		}
-		if (!(mc.crosshairTarget instanceof BlockHitResult hit)
-				|| hit.getType() != HitResult.Type.BLOCK) {
-			return false;
-		}
-		BlockPos pos = hit.getBlockPos();
-		// Still swallow a repeat click on the same block, just without re-announcing:
-		// a held right mouse button reaches here every tick.
-		if (which != lastMarkCorner || !pos.equals(lastMarkPos)) {
-			ClientCommands.setCornerAt(which, pos);
-			lastMarkCorner = which;
-			lastMarkPos = pos.toImmutable();
-		}
-		return true;
+		// Thoát game (đóng có trật tự) → đóng luôn cửa sổ YouTube overlay để không còn tiến trình
+		// Chrome mồ côi. YoutubeScreen còn thêm shutdown hook JVM làm lưới đỡ cho các đường thoát khác.
+		ClientLifecycleEvents.CLIENT_STOPPING.register(client ->
+				com.automine.gui.YoutubeScreen.onGameStopping());
 	}
 
 	/**

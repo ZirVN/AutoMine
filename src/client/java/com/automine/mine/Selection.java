@@ -49,9 +49,14 @@ public final class Selection {
 	}
 
 	public boolean contains(BlockPos pos) {
-		return pos.getX() >= minX() && pos.getX() <= maxX()
-				&& pos.getY() >= minY() && pos.getY() <= maxY()
-				&& pos.getZ() >= minZ() && pos.getZ() <= maxZ();
+		return contains(pos, 0);
+	}
+
+	/** Inside the box stretched by {@code margin} blocks on every axis. */
+	public boolean contains(BlockPos pos, int margin) {
+		return pos.getX() >= minX() - margin && pos.getX() <= maxX() + margin
+				&& pos.getY() >= minY() - margin && pos.getY() <= maxY() + margin
+				&& pos.getZ() >= minZ() - margin && pos.getZ() <= maxZ() + margin;
 	}
 
 	/** Outer box of the whole selection, for rendering. */

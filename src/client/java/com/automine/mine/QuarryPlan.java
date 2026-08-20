@@ -40,12 +40,19 @@ public final class QuarryPlan {
 	public final Direction.Axis travelAxis;
 
 	/**
-	 * Dig the box from the opposite corner: rows start at the far side of the
-	 * cross axis and travel runs the other way. Chosen when another account is
-	 * already working the default end, so the two meet in the middle instead of
-	 * fighting over the same faces.
+	 * Khởi hành từ đầu nào của mỗi trục — chọn theo GÓC GẦN NGƯỜI CHƠI lúc
+	 * /start ("đứng sát đúng 9 ô tính từ phía ngoài vào trong mới tính là sát
+	 * mép": mép ở đây là mép chỗ mình đứng, không phải góc min mặc định ở tận
+	 * đầu kia hộp — bản cũ luôn xuất phát từ góc min, người đứng góc đối diện
+	 * nhìn thấy bot bỏ mép của mình lết 20 block sang bên kia mới chịu đào).
+	 *
+	 * <p>Hai cờ ĐỘC LẬP vì hộp có bốn góc: {@code crossMirrored} lật thứ tự các
+	 * DÃY (bắt đầu từ phía maxC), {@code travelMirrored} lật chiều CHẠY trong
+	 * dãy (bắt đầu từ phía maxT). Kiểu chạy rắn lượn giữ nguyên — chỉ đổi điểm
+	 * xuất phát.
 	 */
-	public final boolean mirrored;
+	public final boolean crossMirrored;
+	public final boolean travelMirrored;
 
 	private final int minT, maxT, minC, maxC, minY, maxY;
 	private final int layerCount, rowCount, stepCount;
@@ -57,14 +64,16 @@ public final class QuarryPlan {
 	private boolean done;
 
 	public QuarryPlan(Selection sel, int layerHeight, int passWidth) {
-		this(sel, layerHeight, passWidth, false);
+		this(sel, layerHeight, passWidth, false, false);
 	}
 
-	public QuarryPlan(Selection sel, int layerHeight, int passWidth, boolean mirrored) {
+	public QuarryPlan(Selection sel, int layerHeight, int passWidth,
+			boolean crossMirrored, boolean travelMirrored) {
 		this.sel = sel;
 		this.layerHeight = Math.max(1, layerHeight);
 		this.passWidth = Math.max(1, passWidth);
-		this.mirrored = mirrored;
+		this.crossMirrored = crossMirrored;
+		this.travelMirrored = travelMirrored;
 		this.selMinX = sel.minX();
 		this.selMinY = sel.minY();
 		this.selMinZ = sel.minZ();
@@ -110,7 +119,7 @@ public final class QuarryPlan {
 
 	/** Odd layers walk their rows in reverse, so a new layer starts under where the last ended. */
 	private int rowSlot() {
-		boolean forward = (layer % 2 == 0) != mirrored;
+		boolean forward = (layer % 2 == 0) != crossMirrored;
 		return forward ? row : (rowCount - 1 - row);
 	}
 
@@ -129,7 +138,7 @@ public final class QuarryPlan {
 	/** +1 or -1, flipping on every row and across layer boundaries too. */
 	public int rowDirection() {
 		int forward = ((layer * rowCount + row) % 2 == 0) ? 1 : -1;
-		return mirrored ? -forward : forward;
+		return travelMirrored ? -forward : forward;
 	}
 
 	public int currentTravel() {
@@ -199,10 +208,37 @@ public final class QuarryPlan {
 	 * tool no safe cell exists, so we aim at the middle and accept the spill.
 	 */
 	public BlockPos faceCenter() {
-		return posAt(
-				currentTravel(),
-				clampInside(rowCenter(), minC, maxC),
-				clampInside(centerY(), minY, maxY));
+		int y = centerY();
+		// Tầng lát 1 ô (đáy hộp lẻ chiều cao): cùng lý do với dãy lát 1 ô ở
+		// aimCross — kéo tâm lên là tâm rơi vào hàng ĐÃ ĐÀO của tầng trên và cả
+		// lát đáy bị nhảy cóc. Nhắm thẳng vào hàng của chính nó.
+		return posAt(currentTravel(), aimCross(),
+				faceHeight() == 1 ? y : clampInside(y, minY, maxY));
+	}
+
+	/**
+	 * Cột (trục ngang) mà mặt đào THỰC SỰ ngắm vào — {@link #rowCenter()} đã được
+	 * kéo vào trong hộp.
+	 *
+	 * <p>Mọi chỗ đặt THÂN (ô đứng, ô vào giếng, ba nhát cắt ngang) phải dùng đúng
+	 * cột này. Engine đo lệch hàng bằng khoảng cách tới {@code faceCenter()}; nếu
+	 * thân được đặt theo {@code rowCenter()} thô thì ở dãy sát rìa hai giá trị lệch
+	 * nhau đúng một block — luật căn hàng không bao giờ đạt, và bot đứng ì tại chỗ
+	 * vì mãi không "đủ điều kiện" bổ.
+	 */
+	public int aimCross() {
+		int centre = rowCenter();
+		// DÃY LÁT 1 Ô ÔM SÁT RÌA (bề ngang hộp chia 3 dư 1) thì KHÔNG kéo tâm
+		// vào trong. Kéo vào là tâm rơi đúng cột ĐÃ ĐÀO của dãy trước — mặt nào
+		// cũng "thủng tâm", cả bức tường 1 ô bị nhảy cóc nguyên hàng, đứng trơ
+		// dọc mép chờ vét ("cứ để thừa 1 block" + ảnh user 2026-08-19, hộp 13
+		// ngang). Nhắm thẳng cột rìa thì đứng trong lòng vùng crosshair chạm MẶT
+		// BÊN của block, mặt phẳng 3x3 xoay theo mặt chạm nên ăn DỌC tường
+		// (travel×Y) — một nhát ba cột tường, sạch mép, không lố sang ngang.
+		if (faceWidth() == 1) {
+			return centre;
+		}
+		return clampInside(centre, minC, maxC);
 	}
 
 	/** Pull {@code v} one block inside [min, max], unless that range is too thin to allow it. */
@@ -240,7 +276,7 @@ public final class QuarryPlan {
 	 * {@code needsDigging}.
 	 */
 	public BlockPos standPos() {
-		return posAt(currentTravel() - rowDirection(), rowCenter(), layerBottom());
+		return posAt(currentTravel() - rowDirection(), aimCross(), layerBottom());
 	}
 
 	/**
@@ -257,7 +293,7 @@ public final class QuarryPlan {
 	 * worked normally from inside the opened row.
 	 */
 	public BlockPos entryPos() {
-		return posAt(currentTravel(), rowCenter(), layerBottom());
+		return posAt(currentTravel(), aimCross(), layerBottom());
 	}
 
 	public BlockPos posAt(int t, int c, int y) {
@@ -351,6 +387,8 @@ public final class QuarryPlan {
 
 	public int layerIndex() { return layer; }
 	public int layerCount() { return layerCount; }
+	/** Dãy đang đào trong tầng — engine dùng để biết lúc nào vừa QUAY SANG DÃY MỚI. */
+	public int rowIndex() { return row; }
 
 	public float progress() {
 		if (done) {
@@ -370,7 +408,7 @@ public final class QuarryPlan {
 				+ " · " + (step + 1) + "/" + stepCount
 				+ " · mặt " + faceWidth() + "x" + faceHeight() + "=" + cellsInFace() + " ô"
 				+ " · trục " + (travelAxis == Direction.Axis.X ? "X" : "Z")
-				+ (mirrored ? " · chiều ngược" : "")
+				+ (crossMirrored || travelMirrored ? " · từ góc gần mình" : "")
 				+ (pass == 1 ? " · vét rìa" : "");
 	}
 

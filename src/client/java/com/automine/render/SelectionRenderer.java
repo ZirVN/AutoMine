@@ -38,7 +38,6 @@ public final class SelectionRenderer {
 	private static final int FACE_COLOR = 0xFFFF3B30;    // red — the 9 cells in hand
 	private static final int CENTER_COLOR = 0xFFFFFFFF;  // white — the middle cell
 	private static final int TARGET_COLOR = 0xFFFF9500;  // orange — block being mined
-	private static final int FLUID_COLOR = 0xFF38BDF8;   // blue — fluid cell being sealed
 
 	/**
 	 * Lines that ignore the depth buffer, so the markers stay visible through walls.
@@ -119,11 +118,6 @@ public final class SelectionRenderer {
 			drawBlock(matrices, lines, cam, target, TARGET_COLOR, 3.0F);
 		}
 
-		// The fluid cell being sealed.
-		BlockPos fluid = engine.fluidTarget();
-		if (fluid != null) {
-			drawBlock(matrices, lines, cam, fluid, FLUID_COLOR, 3.0F);
-		}
 	}
 
 	private static void drawBlock(MatrixStack matrices, VertexConsumer lines, Vec3d cam,
