@@ -89,7 +89,11 @@ public final class QuarryEngine {
 	 * di chuyển đúng tâm ô đó, đào 3 lần để tới hướng tiếp tục vừa nãy" —
 	 * replacing the older cell-by-cell red-cell chew.
 	 */
-	private static final int FACE_RESCUE_TICKS = 30;
+	/** 3 giây không thấy đào là KHOAN LUÔN 3 nhát trước mặt — và được lặp lại
+	 *  mỗi lần kẹt đủ 3s ("lập tức tự khoan liên tục", user 2026-08-20), không
+	 *  còn giới hạn một-lần-mỗi-mặt: khoan là đào block thật nên tự nó là tiến
+	 *  triển, còn khoan không nạp được ô nào thì nấc 8 giây vẫn xử như cũ. */
+	private static final int FACE_RESCUE_TICKS = 60;
 	/**
 	 * The rescue ladder only arms within this range of the face. Far away the one
 	 * and only job is TRAVELLING there — a 1.5s timer firing mid-journey made the
@@ -179,13 +183,12 @@ public final class QuarryEngine {
 	/**
 	 * Số nhát bổ THẲNG XUỐNG khi rơi tầng.
 	 *
-	 * <p>BA nhát, không phải hai (user đổi 2026-08-19): trên server mine block
-	 * hay bị GHOST — client thấy vỡ, server trả lại — nên "3 nhát tính ra ăn
-	 * chắc 2 mức". Không ghost thì nhát ba cũng không thừa: ăn nốt hàng sàn của
-	 * tầng, chân đáp đúng tầm ô đứng chuẩn (layerBottom) của mặt đào. Chạm đáy
-	 * vùng thì vòng kiểm {@code selection.contains} tự dừng sớm, không lố.
+	 * <p>HAI nhát (user giảng cơ chế cúp 2026-08-20): nhát bổ xuống ăn 6 block
+	 * nhưng chỉ SÂU 2 MỨC (3 ngang × 2 sâu) — "2 nhát để đủ 12 block", tụt 4
+	 * mức, rồi KÊ 1 BLOCK đứng lên cho đúng tầm 9 ô (bước chót trong
+	 * tickDescendDigs). Thước dừng thật là ĐỘ SÂU {@link #DESCEND_MAX_DROP}.
 	 */
-	private static final int LAYER_DESCEND_DIGS = 3;
+	private static final int LAYER_DESCEND_DIGS = 2;
 	/**
 	 * Chờ tối đa bấy nhiêu tick cho thân tụt xuống sau mỗi nhát bổ chân.
 	 *
@@ -212,6 +215,14 @@ public final class QuarryEngine {
 	private static final int DESCEND_WAIT_LIMIT = 30;
 	/** Nghỉ bấy nhiêu tick sau khi đáp đáy giếng rồi mới ngẩng đầu vào việc. */
 	private static final int DESCEND_SETTLE_TICKS = 5;
+	/**
+	 * Tụt đủ bấy nhiêu block so với chỗ đứng đầu giếng là DỪNG NGAY, không bổ
+	 * thêm nhát nào (luật user 2026-08-20: "tụt xuống 4 block là dừng ngay,
+	 * chiều cao là 4 — thấy chiều cao 4 lập tức dừng"). Số nhát vì thế TUỲ CẢNH
+	 * — 2 hay 3 nhát đều được, thước đo thật là ĐỘ SÂU chứ không phải đếm nhát:
+	 * ô nào sẵn trống thì khỏi bổ, lỡ thủng xuống hang thì phanh tức thì.
+	 */
+	private static final int DESCEND_MAX_DROP = 4;
 	/**
 	 * A layer entering the sweep with at least this many blocks still standing is
 	 * not "leftovers" — it is a layer with real faces (the server mine REGENERATES,
@@ -332,8 +343,6 @@ public final class QuarryEngine {
 	private BlockPos straightWorking;
 	/** Số nhát THẬT đã bổ ở đầu dãy (ô vốn trống sẵn không tính). */
 	private int straightSwings;
-	/** Mặt hiện tại đã dùng cú cứu "ba nhát thẳng" chưa — mỗi mặt đúng một lần. */
-	private boolean straightRescueTried;
 	/**
 	 * Đang ĐỨNG DƯỚI tầng nhưng vẫn với tới mặt đào — đứng im ngay mép mà bổ.
 	 *
@@ -363,6 +372,8 @@ public final class QuarryEngine {
 	private int descendTicks;
 	/** Cột (X,Z) của Ô ĐỨNG (= cột giếng) — thân căn gọn giữa cột này trước khi bổ. */
 	private BlockPos descendColumn;
+	/** Y lúc bắt đầu đứng lên cột giếng — đo độ tụt cho phanh {@link #DESCEND_MAX_DROP}. */
+	private int descendStartY;
 	/** Số tick đứng chờ tụt xuống sau một nhát; trần {@link #DESCEND_WAIT_LIMIT}. */
 	private int descendWaitTicks;
 	/** Số tick đã nghỉ ở đáy giếng trước khi bàn giao — xem {@link #DESCEND_SETTLE_TICKS}. */
@@ -931,9 +942,24 @@ public final class QuarryEngine {
 			// suốt quãng đường tới mặt đầu tiên ("đào tới 9 ô đỏ rất chậm").
 			if (startupTicks == 0 && !plan.areLayerFacesDone()
 					&& player.getBlockY() > plan.faceCenter().getY()) {
-				armDescendDigs(player);
-				message("đứng trên tầng " + (plan.layerIndex() + 1)
-						+ " — tới ô 9 đỏ, mở giếng rồi đào tiếp");
+				// "PHẢI TÍNH 9 Ô Ở TRONG CÙNG" (user, kèm ảnh góc mỏ): mặt ngoài
+				// rìa hay vắt qua góc — một phần khối 3x3 là KHÍ của phòng bên,
+				// chỉ còn 6 đá — mở giếng ở đó vừa xấu vừa sinh cảnh rơi lọt.
+				// Dí con trỏ qua các mặt chưa ĐẶC KÍN cho tới mặt đầu tiên đủ 9
+				// đá rồi mới mở giếng; mấy ô đá lẻ ở mặt rìa bị nhảy qua thì lượt
+				// vét dọn sau (đa phần vốn là khí, chẳng mất gì).
+				int probe = 0;
+				while (!plan.areLayerFacesDone() && !faceFullySolid(world)
+						&& probe++ < SKIP_BUDGET) {
+					plan.advance();
+				}
+				// Giếng đã mở sẵn từ lần chạy trước thì khỏi diễn lại nghi thức
+				// đi-căn-quay-bổ — máy mặt tự chui xuống lỗ cũ mà đào tiếp.
+				if (!plan.areLayerFacesDone() && !wellAlreadyOpen(world)) {
+					armDescendDigs(player);
+					message("đứng trên tầng " + (plan.layerIndex() + 1)
+							+ " — tới ô 9 đỏ, mở giếng rồi đào tiếp");
+				}
 			}
 			note = "quét vùng điểm 1 → điểm 2…";
 			return;
@@ -1705,8 +1731,21 @@ public final class QuarryEngine {
 		// edgeDigging: đang CỐ Ý đứng dưới tầng để với lên đào (luật "đào hết cỡ
 		// rồi mới bắc") — recovery mà giật tick lúc này là cầm BLOCK đè lên cái
 		// tay đang cầm CÚP, tái sinh đúng vòng "block-cúp" vừa dập.
+		// NGOẠI LỆ CỦA NGOẠI LỆ (user 2026-08-20: "lọt xuống 4 block tức là thừa
+		// 1 ô — phải bắc block lên rồi mới đào, không được ngước mặt lên đào"):
+		// đứng DƯỚI tầng mà đang ở NGAY CỘT MẶT ĐÀO thì recovery cướp quyền tuyệt
+		// đối — kê block lên ngang sàn đã, cấm máy mặt/3-nhát chộp tick mà ngước
+		// bổ từ dưới. Ở XA mặt mới nhường APPROACH (bài học cũ: mỏ rỗng mà bắc
+		// trụ tại chỗ là vòng lặp bước-rơi-leo).
+		boolean atFaceColumn = false;
+		if (!plan.areLayerFacesDone()) {
+			BlockPos faceCol = plan.faceCenter();
+			double dx = faceCol.getX() + 0.5 - player.getX();
+			double dz = faceCol.getZ() + 0.5 - player.getZ();
+			atFaceColumn = dx * dx + dz * dz <= 6.25; // trong 2.5 block quanh cột
+		}
 		boolean navigating = plan.areLayerFacesDone()
-				|| phase == Phase.APPROACH || phase == Phase.REPOSITION
+				|| (phase == Phase.APPROACH && !atFaceColumn) || phase == Phase.REPOSITION
 				|| sweepStance != null || edgeDigging;
 		if (navigating) {
 			recovering = false;
@@ -1790,7 +1829,6 @@ public final class QuarryEngine {
 		// kẹt: đúng cảnh "đào 2 lần xong lại bị nhảy nữa". Giữ cờ theo
 		// {@code frontDigsLeft} thì ba nhát mới thật sự là ba nhát.
 		useEntryStance = frontDigsLeft > 0;
-		straightRescueTried = false; // mặt mới thì lại được một cú cứu ba nhát
 		edgeDigging = false; // mặt mới tự quyết lại chuyện với-từ-mép
 		triedStances.clear();
 	}
@@ -1971,9 +2009,7 @@ public final class QuarryEngine {
 		ClientPlayerEntity self = client.player;
 		boolean nearFace = self != null
 				&& centre.getSquaredDistance(self.getBlockPos()) <= RESCUE_NEAR_SQ;
-		if (nearFace && !straightRescueTried && faceTicks > FACE_RESCUE_TICKS
-				&& straightQueue.isEmpty()) {
-			straightRescueTried = true;
+		if (nearFace && faceTicks > FACE_RESCUE_TICKS && straightQueue.isEmpty()) {
 			// KẸT THÌ BỔ BA NHÁT THẲNG, ĐÚNG BỘ MÁY CỦA ĐẦU DÃY.
 			//
 			// User chốt: "bị kẹt vào ở giữa, 9 ô ở trong góc, nên khi thấy ko đào
@@ -1997,7 +2033,7 @@ public final class QuarryEngine {
 				mover.reset();
 				faceTicks = 0; // cú xử lý này được trọn cửa sổ riêng trước nấc 8 giây
 				enterPhase(Phase.APPROACH);
-				message("§ekẹt 1.5s — bổ " + STRAIGHT_DIGS_PER_ROW + " nhát thẳng rồi đi tiếp");
+				message("§ekẹt 3s — khoan " + STRAIGHT_DIGS_PER_ROW + " nhát thẳng rồi đi tiếp");
 			}
 		}
 
@@ -2093,7 +2129,18 @@ public final class QuarryEngine {
 		// ĐI THẲNG TỚI ĐÚNG CỘT Ô 9 rồi cúi bổ xuống ngay tại chỗ (lệnh chốt của
 		// user: "đi tới thẳng chỗ đó và đào 2 nhát xuống rồi tiếp tục đào theo
 		// hướng"). Bản đứng-lùi-2-block bổ từ xa đã gỡ theo cùng lệnh.
-		BlockPos well = plan.faceCenter();
+		//
+		// Cột giếng KÉO 1 BLOCK VÀO TRONG theo trục chạy (user 2026-08-20: "lúc
+		// khởi đầu /start phải tính 9 ô ở trong cùng — đào sát mép"): lát 3x3
+		// nằm ngang của nhát bổ xuống phủ ±1 quanh cột, đặt giếng ngay mép là
+		// khoét ra NGOÀI hộp 1 cột. Dời vào 1 thì lát phủ [mép..mép+2] gọn trong
+		// hộp — vẫn ăn sát mép, và ba nhát mở luôn trọn khối 3x3x3 đầu dãy.
+		BlockPos face = plan.faceCenter();
+		int wellT = plan.currentTravel();
+		if (plan.maxTravel() - plan.minTravel() >= 2) {
+			wellT = Math.max(plan.minTravel() + 1, Math.min(plan.maxTravel() - 1, wellT));
+		}
+		BlockPos well = plan.posAt(wellT, plan.aimCross(), face.getY());
 		BlockPos stand = new BlockPos(well.getX(), plan.layerTop() + 1, well.getZ());
 		// Nóc tầng+1 là chỗ đứng khi tầng còn nguyên khối đá. Hộp đánh dấu từ mặt
 		// sàn mine thì hàng trên của tầng là KHÍ và mặt đi lại thấp hơn một mức —
@@ -2106,6 +2153,7 @@ public final class QuarryEngine {
 		}
 		descendStand = stand.toImmutable();
 		descendColumn = descendStand;
+		descendStartY = stand.getY();
 	}
 
 	/**
@@ -2149,34 +2197,45 @@ public final class QuarryEngine {
 			return true;
 		}
 
-		// Bước 2: cúi bổ xuống chân cho đủ HAI NHÁT THẬT, ngay tại cột ô 9.
+		// Bước 2: cúi bổ xuống chân ngay tại cột ô 9 — dừng theo ĐỘ SÂU.
 		if (!descendDigging) {
 			return false;
 		}
+		// (Phanh độ sâu gộp vào khối "đào đủ" bên dưới — tụt đủ 4 mức không phải
+		// là lỗi nữa mà là ĐÍCH của 2 nhát, sau đó kê 1 block đứng lên đúng tầm.)
 		// Ô đang bổ đã vỡ → tính một nhát; thân sẽ rơi theo, chờ đáp rồi bổ tiếp.
 		if (descendWorking != null && !needsDigging(world, descendWorking)) {
 			descendSwings++;
 			descendWorking = null;
 			descendTicks = 0;
 		}
-		if (descendSwings >= LAYER_DESCEND_DIGS) {
-			// XÁC NHẬN XONG HẲN RỒI MỚI TRẢ MÁY CHÍNH (luật user: "đào xong 2
-			// nhát, xác định đào xong rồi mới đào hướng 9 ô tiếp"). Bản trước trả
-			// ngay cái tick nhát 2 vỡ — thân còn đang rơi xuống đáy giếng thì máy
-			// mặt đã chộp tick, ngắm mặt kế, đầu ngóc dậy giữa chừng. Giờ: đợi
-			// ĐÁP ĐÁY đã, nghỉ đúng một nhịp ngắn cho ra tấm ra món, rồi mới ngẩng
-			// đầu vào việc — cả lượt cúi là một khối liền: cúi, bổ, bổ, đáp, dậy.
+		// ĐÀO ĐỦ = đủ 2 nhát HOẶC đã tụt đủ 4 mức. Công thức user giảng tận nơi:
+		// cúp bổ xuống ăn 6 block MỖI NHÁT nhưng chỉ SÂU 2 MỨC (3 ngang × 2 sâu),
+		// nên 2 nhát = 12 block = tụt 4 — thừa đúng 1 mức so với tầm đứng chuẩn.
+		boolean dugEnough = descendSwings >= LAYER_DESCEND_DIGS
+				|| descendStartY - player.getBlockY() >= DESCEND_MAX_DROP;
+		if (dugEnough) {
+			// BƯỚC CHÓT CỦA GIẾNG: "đặt 1 block lên để đứng đúng với tầm 9 block,
+			// đào đúng tâm giữa" — còn thấp hơn sàn tầng thì KÊ BLOCK đứng lên,
+			// xong xuôi nghỉ một nhịp rồi mới trả máy chính ngẩng đầu đào head-on.
 			if (!player.isOnGround()) {
 				input.stop();
 				note = "xuống tầng — chờ đáp đáy giếng";
 				return true;
 			}
+			if (player.getBlockY() < plan.layerBottom()) {
+				if (mover.pillarUp(player)) {
+					note = "xuống tầng — kê 1 block lên đúng tầm 9 ô";
+					return true;
+				}
+				return endDescendDigs(); // hết block để kê — recovery/máy chính lo
+			}
 			if (++descendSettleTicks <= DESCEND_SETTLE_TICKS) {
 				input.stop();
-				note = "xuống tầng — xong 2 nhát, vào việc";
+				note = "xuống tầng — đúng tầm, vào việc";
 				return true;
 			}
-			return endDescendDigs(); // đủ hai mức, đã đáp — máy chính đào theo hướng
+			return endDescendDigs(); // đứng đúng tầm 9 ô — máy chính đào theo hướng
 		}
 		if (descendTicks > STRAIGHT_DIG_LIMIT) {
 			return endDescendDigs(); // lì quá thì thôi, để máy chính lo
@@ -2261,6 +2320,12 @@ public final class QuarryEngine {
 		if (stubborn.containsKey(target)) {
 			return endDescendDigs();
 		}
+		// BLOCK MÌNH VỪA KÊ thì tuyệt đối không bổ lại: bổ nó là rơi, recovery kê
+		// tiếp, giếng lại bổ tiếp — chính cái vòng "đào xong lại phá chỗ 4 block"
+		// user quay được. Chạm đúng viên kê là coi như giếng đã tới đáy hữu dụng.
+		if (mover.placedCells().contains(target)) {
+			return endDescendDigs();
+		}
 		if (!needsDigging(world, target) || !breaker.canReach(target, reach)) {
 			return endDescendDigs(); // nền không phá được / mất tầm — trả máy chính
 		}
@@ -2268,6 +2333,33 @@ public final class QuarryEngine {
 		input.stop();
 		workTarget(target, reach); // cúi bổ thẳng xuống, một tư thế — yaw không đổi
 		note = "xuống tầng — bổ xuống " + (descendSwings + 1) + "/" + LAYER_DESCEND_DIGS;
+		return true;
+	}
+
+	/** Mặt hiện tại có ĐẶC KÍN cả 9 ô không (mọi ô trong hộp đều là đá phá được). */
+	private boolean faceFullySolid(World world) {
+		int solid = 0;
+		for (BlockPos cell : plan.faceCells()) {
+			if (!selection.contains(cell)) {
+				return false; // mặt sát rìa, lát thò ra ngoài — không phải "trong cùng"
+			}
+			if (!needsDigging(world, cell)) {
+				return false; // dính ô khí/đã đào — mặt 6 đá kiểu vắt góc
+			}
+			solid++;
+		}
+		return solid == 9;
+	}
+
+	/** Ba mức giếng của cột mặt hiện tại đã mở sẵn hết chưa (chạy lại /start). */
+	private boolean wellAlreadyOpen(World world) {
+		BlockPos face = plan.faceCenter();
+		for (int level = 0; level < LAYER_DESCEND_DIGS; level++) {
+			BlockPos cell = new BlockPos(face.getX(), plan.layerTop() - level, face.getZ());
+			if (selection.contains(cell) && !world.getBlockState(cell).isAir()) {
+				return false;
+			}
+		}
 		return true;
 	}
 
@@ -2692,24 +2784,12 @@ public final class QuarryEngine {
 	private void approachFace(World world, BlockPos centre) {
 		ClientPlayerEntity player = client.player;
 
-		// ĐỨNG DƯỚI TẦNG MÀ CÒN VỚI TỚI THÌ ĐÀO TRƯỚC, LEO SAU (xem edgeDigging).
-		//
-		// Tầm dùng là tầm server (dài nhất có thể) — "với tới trước mặt đào hết
-		// cỡ" đúng nghĩa đen. Điều kiện đứng-trên-đất + không-đang-leo giữ cho
-		// nhánh này không cướp tick giữa cú nhảy của trụ: đỉnh cú nhảy tầm với
-		// hay thoáng chạm tới tâm, cướp lúc đó là giết cú đặt block đang dở.
-		// Mỗi mặt vỡ xong con trỏ tự sang mặt kế, vòng lại đây, lại với thử —
-		// hết với nổi thì rơi xuống lối thường bên dưới (đi/leo), tức là chỉ
-		// "bắc block lên" khi thật sự không còn gì đào được từ chỗ đứng.
-		if (player != null && player.isOnGround() && !mover.isClimbing()
-				&& player.getBlockY() < plan.layerBottom()
-				&& breaker.canReach(centre,
-						Math.max(config.reachDistance, player.getBlockInteractionRange()))) {
-			input.stop();
-			edgeDigging = true;
-			enterPhase(Phase.AIM_LOCK);
-			return;
-		}
+		// LUẬT MỚI 2026-08-20 (đảo hẳn luật "với tới đào hết cỡ" cũ): "phải 100%
+		// đứng trên bề mặt tâm mới đào — KHÔNG ĐƯỢC VỚI CÁI ĐẦU LÊN để đào; phải
+		// ĐẶT BLOCK đứng ngang hàng với tâm 9 ô đỏ đó để đào". Nhánh với-từ-mép
+		// (đứng dưới tầng, ngước lên bổ) đã gỡ: giờ đứng thấp hơn tầng là đi lối
+		// thường bên dưới — moveTo/recovery tự KÊ BLOCK leo lên tới đúng tầm ô
+		// đứng chuẩn (ngang hàng tâm), rồi mới được rút cúp bổ head-on.
 
 		if (player != null && !mover.isClimbing()
 				&& breaker.canReach(centre, config.reachDistance)

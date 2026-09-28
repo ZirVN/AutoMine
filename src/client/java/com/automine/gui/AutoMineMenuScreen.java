@@ -164,7 +164,7 @@ public final class AutoMineMenuScreen extends Screen implements StyledScreen {
 				client.setScreen(new com.automine.spotify.SpotifyScreen(this));
 			}
 		}, null));
-		music.add(new ButtonEntry(() -> "▶ Mở YouTube", () -> {
+		music.add(new ButtonEntry(() -> "🌐 Xem Web / YouTube", () -> {
 			if (client != null) {
 				client.setScreen(new YoutubeScreen(this));
 			}

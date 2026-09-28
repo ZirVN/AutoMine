@@ -40,7 +40,7 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 	private int scroll;
 
 	public YoutubeScreen(Screen parent) {
-		super(Text.literal("YouTube"));
+		super(Text.literal("Xem Web"));
 		this.parent = parent;
 	}
 
@@ -49,7 +49,7 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 	}
 
 	private int listBottom() {
-		return this.height - 44;
+		return this.height - 58;
 	}
 
 	private int visibleRows() {
@@ -64,13 +64,13 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 		searchBox.setMaxLength(300);
 		searchBox.setEditableColor(0xFFFFFFFF);   // chữ gõ vào TRẮNG
 		searchBox.setUneditableColor(0xFFFFFFFF);
-		searchBox.setPlaceholder(Text.literal("§7Tên video / ca sĩ — hoặc dán link youtube.com/…"));
+		searchBox.setPlaceholder(Text.literal("§7Tìm YouTube — hoặc dán LINK WEB bất kỳ (facebook, shopee…)"));
 		addDrawableChild(searchBox);
 
 		addDrawableChild(FlatButton.of(left + PANEL_W - 172, 26, 78, 18, "Tìm", b -> doSearch()));
 		addDrawableChild(FlatButton.of(left + PANEL_W - 90, 26, 90, 18, "Xem ngay", b -> openTyped()));
 
-		addDrawableChild(FlatButton.of(this.width / 2 - 60, this.height - 32, 120, 20, "Đóng",
+		addDrawableChild(FlatButton.of(this.width / 2 - 60, this.height - 26, 120, 20, "Đóng",
 				b -> close()));
 	}
 
@@ -107,7 +107,7 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 		open("https://www.youtube.com/results?search_query=" + urlEncode(q));
 	}
 
-	/** Mở thẳng nếu chuỗi là link/ID YouTube. @return true nếu đã mở. */
+	/** Mở thẳng nếu chuỗi là link — YouTube hay BẤT KỲ trang web nào. @return true nếu đã mở. */
 	private boolean openIfLink(String q) {
 		String id = extractId(q);
 		if (id != null) {
@@ -116,6 +116,18 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 		}
 		if (q.contains("youtube.com/") || q.contains("youtu.be/")) {
 			open(q.startsWith("http") ? q : "https://" + q);
+			return true;
+		}
+		// LINK WEB BẤT KỲ → cùng một cửa sổ nổi (lệnh user 2026-08-20: "gửi link
+		// nào vào đó sẽ hiện lên màn y hệt ytb — xem cái gì trên web cũng được").
+		// open() tự lo: không phải YouTube thì URL đi nguyên vào cửa sổ --app,
+		// vẫn không viền, ghim trên game, kéo được y hệt khung YouTube.
+		if (q.startsWith("http://") || q.startsWith("https://")) {
+			open(q);
+			return true;
+		}
+		if (q.matches("[\\w.-]+\\.[a-zA-Z]{2,}(/\\S*)?")) {
+			open("https://" + q); // gõ trần kiểu "facebook.com/abc" cũng nhận
 			return true;
 		}
 		return false;
@@ -141,7 +153,7 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 		String playUrl = playerPageFor(url);
 
 		if (openOverlay(playUrl)) {
-			this.status = "§aĐã mở YouTube (chỉ video). Kéo THANH XÁM trên cùng để dời đi bất kỳ đâu; kéo mép để phóng to/thu nhỏ.";
+			this.status = "§aĐã mở — kéo dải xám TRÊN CÙNG cửa sổ để dời; kéo mép để to/nhỏ.";
 			return;
 		}
 		try {
@@ -202,7 +214,8 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 				String html = "<!doctype html><html><head><meta charset=\"utf-8\"><title>YouTube</title>"
 						+ "<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}"
 						+ "body{display:flex;flex-direction:column}"
-						+ "#bar{flex:0 0 20px;height:20px;background:rgba(14,14,16,.92);cursor:move;user-select:none;border-bottom:1px solid rgba(255,255,255,.08)}"
+						+ "#bar{flex:0 0 30px;height:30px;background:rgba(20,20,24,.96);cursor:move;user-select:none;border-bottom:1px solid rgba(255,255,255,.10);display:flex;align-items:center;justify-content:center}"
+						+ "#bar::after{content:'';width:46px;height:4px;border-radius:3px;background:rgba(255,255,255,.28)}"
 						+ "#bar:hover{background:rgba(34,34,40,.96)}"
 						+ "iframe{border:0;width:100%;flex:1 1 auto;display:block}</style></head><body>"
 						+ "<div id=\"bar\"></div>"
@@ -247,7 +260,7 @@ public final class YoutubeScreen extends Screen implements StyledScreen {
 		// không đè lên taskbar). ĐỌC vị trí Ở ĐÂY (thread client) vì API cửa sổ GLFW chỉ an toàn ở thread
 		// chính; phần đóng cửa sổ cũ + bật Chrome đẩy sang thread nền để không làm đơ game.
 		int w = 520;
-		int h = 362;   // dư ~34px (thanh tiêu đề Chrome bị xén) + ~22px (thanh KÉO của mình) → video ~300px
+		int h = 374;   // dư ~34px (title bar Chrome bị xén) + 30px (thanh KÉO) → video ~300px
 		int x = 1360;
 		int y = 700;
 		try {
@@ -509,7 +522,7 @@ while((Get-Date) -lt $deadline){
 		super.render(ctx, mouseX, mouseY, delta);
 
 		int left = panelLeft();
-		ctx.drawText(this.textRenderer, "▶ YouTube", left, 16, 0xFFFF5555, true);
+		ctx.drawText(this.textRenderer, "🌐 Xem Web · ▶ YouTube", left, 16, 0xFFFF5555, true);
 
 		int rows = visibleRows();
 		for (int i = 0; i < rows; i++) {
@@ -532,7 +545,8 @@ while((Get-Date) -lt $deadline){
 					left, listBottom() + 2, 0xFF888888, false);
 		}
 
-		ctx.drawText(this.textRenderer, status, left, this.height - 44 + 14, 0xFFFFFFFF, true);
+		// Cắt theo BỀ RỘNG panel để chữ không tràn ra ngoài khung; nằm trên nút Đóng.
+		ctx.drawText(this.textRenderer, fitWidth(status, PANEL_W), left, this.height - 44, 0xFFFFFFFF, true);
 	}
 
 	private static String trim(String s, int max) {
@@ -540,6 +554,20 @@ while((Get-Date) -lt $deadline){
 			return "";
 		}
 		return s.length() > max ? s.substring(0, max - 1) + "…" : s;
+	}
+
+	/** Cắt chuỗi cho vừa {@code maxW} pixel (thêm "…") — chống chữ tràn khỏi panel. */
+	private String fitWidth(String s, int maxW) {
+		if (s == null) {
+			return "";
+		}
+		if (this.textRenderer.getWidth(s) <= maxW) {
+			return s;
+		}
+		while (s.length() > 1 && this.textRenderer.getWidth(s + "…") > maxW) {
+			s = s.substring(0, s.length() - 1);
+		}
+		return s + "…";
 	}
 
 	@Override
