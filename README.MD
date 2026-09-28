@@ -38,7 +38,7 @@
 
 ---
 
-## 🎮 Các lệnh cơ bản (Commands)
+## Các lệnh cơ bản (Commands)
 
 | Lệnh | Chức năng |
 |------|-----------|
@@ -53,7 +53,7 @@
 
 ---
 
-## ⚙️ Cài đặt nhanh
+## Cài đặt nhanh
 
 1. Tải bản build mod (file `.jar`) hoặc tự build bằng lệnh `./gradlew build`.
 2. Đặt file mod vào thư mục `.minecraft/mods`.
